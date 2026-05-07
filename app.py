@@ -5,6 +5,8 @@ import os
 from dotenv import load_dotenv
 from datetime import date
 from flask import jsonify
+from flask import Response
+from flask import json
 
 load_dotenv()
 
@@ -156,31 +158,103 @@ def dashboard_ref():
                            top5Models=top5Models,
                            orgData=orgData)
 
-@app.route('/api/chart-data')
-def api_chart_data():
+@app.route('/api/chart-data1')
+def api_chart_data1():
+    sql = "SELECT t1.model_name,COUNT(t1.model_name) AS count FROM model_data t1 LEFT JOIN model_type t2 ON t1.model_name = t2.model_name WHERE t2.type_code = 1 GROUP BY t1.model_name";
+    return get_char_data(sql)
+
+@app.route('/api/chart-data2')
+def api_chart_data2():
+    sql = "SELECT t1.model_name,COUNT(t1.model_name) AS count FROM model_data t1 LEFT JOIN model_type t2 ON t1.model_name = t2.model_name WHERE t2.type_code = 2 GROUP BY t1.model_name";
+    return get_char_data(sql)
+
+@app.route('/api/chart-data3')
+def api_chart_data3():
+    sql = "SELECT t1.model_name,COUNT(t1.model_name) AS count FROM model_data t1 LEFT JOIN model_type t2 ON t1.model_name = t2.model_name WHERE t2.type_code = 3 GROUP BY t1.model_name";
+    return get_char_data(sql)
+
+@app.route('/api/chart-data4')
+def api_chart_data4():
+    sql = "SELECT t1.model_name,COUNT(t1.model_name) AS count FROM model_data t1 LEFT JOIN model_type t2 ON t1.model_name = t2.model_name WHERE t2.type_code = 4 GROUP BY t1.model_name";
+    return get_char_data(sql)
+
+@app.route('/api/chart-data5')
+def api_chart_data5():
+    sql = "SELECT t1.model_name,COUNT(t1.model_name) AS count FROM model_data t1 LEFT JOIN model_type t2 ON t1.model_name = t2.model_name WHERE t2.type_code = 5 GROUP BY t1.model_name";
+    return get_char_data(sql)
+
+
+def get_char_data(sql):
     try:
         db = get_db()
         cursor = db.cursor()
         # 🔥 关键：SQL 别名必须和后面取的一致
-        cursor.execute("SELECT model_name, COUNT(*) as count FROM model_data GROUP BY model_name")
+        cursor.execute(sql)
         rows = cursor.fetchall()
 
         # 正确取值方式
         data = []
         for row in rows:
             data.append({
-                "model_name": row['model_name'],   # 第一列：model_name
-                "count": row['count']         # 第二列：count
+                "model_name": row['model_name'],  # 第一列：model_name
+                "count": row['count']  # 第二列：count
             })
 
     except Exception as e:
         print("查询错误：", e)
         data = []
-
     return jsonify(data)
 
 
+@app.route('/api/chart-data-detail1/<model_name>')
+def chart_data_detail1(model_name):
+    try:
+        sql = "    SELECT t1.id,t1.model_name,t1.field1,t1.field2,t1.field3,t1.field4,t1.field5,t1.field6,t1.field7,t1.field8,t1.field9,t1.field10,t1.field11,t1.field12,t1.field13,t1.field14,t1.field15,t1.field16,t1.field17,t1.field18,t1.field19,t1.field20,t1.create_time FROM model_data t1 WHERE t1.model_name = %s";
+        sql2 = "  SELECT t1.model_name,t1.field1,t1.field2,t1.field3,t1.field4,t1.field5,t1.field6,t1.field7,t1.field8,t1.field9,t1.field10,t1.field11,t1.field12,t1.field13,t1.field14,t1.field15,t1.field16,t1.field17,t1.field18,t1.field19,t1.field20,t1.create_time FROM model_config t1 LEFT JOIN model_data t2 on t1.model_name=t2.model_name WHERE t1.model_name = %s limit 1  ";
+        db = get_db()
+        cursor = db.cursor()
+        cursor2 = db.cursor()
+        # 🔥 关键：SQL 别名必须和后面取的一致
+        cursor.execute(sql,model_name)
+        cursor2.execute(sql2,model_name)
+        rows = cursor.fetchall()
+        rows2 = cursor2.fetchall()
 
+        # 正确取值方式
+        data = []
+        data2 = []
+
+
+        for row in rows:
+            datatmp=[]
+            count = 0;
+            for i in range(1, row.__len__()):
+                count+=1;
+                field="field"+str(count)
+                filedName=row.get(field)
+                datatmp.append(
+                    filedName)
+            data.append([
+                datatmp
+            ])
+        count2 = 0;
+        row2=rows2[0]
+        for i in range(1, row2.__len__()):
+            count2 += 1;
+            field = "field" + str(count2)
+            filedName = row2.get(field)
+            data2.append(
+                filedName
+            )
+    except Exception as e:
+        print("查询错误：", e)
+        data = []
+        data2 = []
+
+    res=[]
+    res.append(data2)
+    res.append(data)
+    return Response(json.dumps(res), mimetype="application/json")
 
 
 if __name__ == '__main__':
