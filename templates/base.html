@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>数据驾驶舱</title>
+    <script src="https://cdn.jsdelivr.net/npm/vue@2/dist/vue.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/element-ui/lib/theme-chalk/index.css">
+    <script src="https://cdn.jsdelivr.net/npm/element-ui/lib/index.js"></script>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box;font-family:"Microsoft YaHei"}
+        body{background:#0a1a30;color:#fff;min-height:100vh}
+        .layout{display:flex}
+        .sidebar{width:240px;background:#0f2b52;position:fixed;height:100vh;padding:30px 0}
+        .sidebar h2{color:#00d4ff;text-align:center;margin-bottom:30px}
+        .sidebar ul{list-style:none}
+        .sidebar li{padding:15px 20px}
+        .sidebar a{color:#a8d8ff;text-decoration:none;font-size:16px}
+        .content{margin-left:240px;padding:30px;width:100%}
+        .card{background:#0f3460;border:1px solid #1e60ff;border-radius:12px;padding:20px;color:#fff}
+        .stat-item{background:#12397a;padding:18px 10px;border-radius:8px;font-weight:bold}
+        h1,h2,h3{margin:0}
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="layout">
+            <div class="sidebar">
+                <h2>数据中心</h2>
+                <ul>
+                    <li><a href="/" class="active">📊 数据驾驶舱</a></li>
+                </ul>
+            </div>
+            <div class="content">
+                {% block content %}{% endblock %}
+            </div>
+        </div>
+    </div>
+{% block script %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div id="app">
+<!-- 顶部按钮 -->
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+  <h1 style="font-size: 20px; color: #00d4ff; margin:0;">“慧眼”村镇银行全风险监测平台</h1>
+  <div>
+    <el-button type="primary" @click="tab='model'">模型监控</el-button>
+    <el-button type="primary" @click="tab='trend'">趋势概览</el-button>
+    <el-button type="success" style="margin-left:10px" @click="importDialog=true">📁 导入数据</el-button>
+  </div>
+</div>
+
+<!-- 导入弹窗 -->
+<el-dialog title="📁 导入Excel数据" :visible.sync="importDialog" width="500px">
+  <form method="POST" enctype="multipart/form-data">
+    <div style="padding:20px 0; text-align:center">
+      <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom:15px">
+    </div>
+    <span slot="footer">
+      <el-button @click="importDialog=false">取消</el-button>
+      <el-button type="primary" native-type="submit">开始导入</el-button>
+    </span>
+  </form>
+</el-dialog>
+
+<!-- 模型面板 -->
+<div v-if="tab==='model'" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;width:100%;height:calc(100vh - 85px);">
+  <div style="background:#0f3460;border:1px solid #1e60ff;padding:15px;border-radius:8px;color:#fff;">
+    <div style="font-size:16px;font-weight:bold;margin-bottom:10px">总览</div>
+  </div>
+
+  <!-- 柱状图 -->
+  <div style="background:#0f3460;border:1px solid #1e60ff;padding:15px;border-radius:8px;color:#fff;grid-column: span 2;">
+    <div style="font-size:16px;font-weight:bold;margin-bottom:10px">贷款业务全流程风险监测模型</div>
+    <div id="loanChart" style="width:100%;height:220px;"></div>
+  </div>
+
+  <div style="background:#0f3460;border:1px solid #1e60ff;padding:15px;border-radius:8px;color:#fff;"></div>
+  <div style="background:#0f3460;border:1px solid #1e60ff;padding:15px;border-radius:8px;color:#fff;"></div>
+  <div style="background:#0f3460;border:1px solid #1e60ff;padding:15px;border-radius:8px;color:#fff;"></div>
+</div>
+
+<div v-if="tab==='trend'" style="background:#0f3460;border:1px solid #1e60ff;padding:30px;border-radius:8px;color:#fff;text-align:center;">
+  <h2>📈 趋势概览</h2>
+</div>
+
+</div>
+{% endblock %}
+
+{% block script %}
+<script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
+<script>
+// 最简单、最稳定、绝不崩溃
+new Vue({
+  el: '#app',
+  data: {
+    tab: 'model',
+    importDialog: false
+  },
+  mounted() {
+    this.initChart();
+  },
+  methods: {
+    initChart() {
+      const chart = echarts.init(document.getElementById('loanChart'));
+      fetch("/api/chart-data")
+        .then(res => res.json())
+        .then(data => {
+          const x = data.map(i => i.model_name);
+          const y = data.map(i => i.count);
+          chart.setOption({
+            xAxis: {
+              data: x,
+              axisLabel: { color: '#fff', rotate: 45, interval: 0 }
+            },
+            yAxis: { axisLabel: { color: '#fff' } },
+            series: [{ data: y, type: 'bar', itemStyle: { color: '#009dff' } }],
+            grid: { bottom: '20%', containLabel: true }
+          });
+        })
+    }
+  }
+})
+</script>
+{% endblock %}
