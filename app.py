@@ -213,72 +213,55 @@ def dashboard_ref():
                            orgData=orgData)
 
 
-def get_chart_data(sql):
-    """通用方法：执行 SQL 并返回 JSON 化的 {model_name, count} 列表"""
+@app.route('/api/chart-data')
+def api_chart_data1():
+    type_code = request.args.get('typeCode')
+    if not type_code:
+        return jsonify({"error": "缺少必传参数：typeCode!"}), 400
+    sql = """
+           SELECT t1.model_name, COUNT(t1.model_name) AS count
+           FROM model_data t1
+           LEFT JOIN model_type t2 ON t1.model_name = t2.model_name
+           WHERE t2.type_code = ?
+           GROUP BY t1.model_name
+       """
     try:
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute(sql)
+        cursor.execute(sql, (type_code,))
         rows = cursor.fetchall()
         data = [{"model_name": row["model_name"], "count": row["count"]} for row in rows]
         cursor.close()
         conn.close()
-        return jsonify(data)
+        return Response(
+            json.dumps(data, ensure_ascii=False),
+            mimetype='application/json'
+        )
     except Exception as e:
         print("查询错误：", e)
         return jsonify([])
 
 
-@app.route('/api/chart-data1')
-def api_chart_data1():
-    sql = "SELECT t1.model_name, COUNT(t1.model_name) AS count FROM model_data t1 LEFT JOIN model_type t2 ON t1.model_name = t2.model_name WHERE t2.type_code = 1 GROUP BY t1.model_name"
-    return get_chart_data(sql)
-
-
-@app.route('/api/chart-data2')
-def api_chart_data2():
-    sql = "SELECT t1.model_name, COUNT(t1.model_name) AS count FROM model_data t1 LEFT JOIN model_type t2 ON t1.model_name = t2.model_name WHERE t2.type_code = 2 GROUP BY t1.model_name"
-    return get_chart_data(sql)
-
-
-@app.route('/api/chart-data3')
-def api_chart_data3():
-    sql = "SELECT t1.model_name, COUNT(t1.model_name) AS count FROM model_data t1 LEFT JOIN model_type t2 ON t1.model_name = t2.model_name WHERE t2.type_code = 3 GROUP BY t1.model_name"
-    return get_chart_data(sql)
-
-
-@app.route('/api/chart-data4')
-def api_chart_data4():
-    sql = "SELECT t1.model_name, COUNT(t1.model_name) AS count FROM model_data t1 LEFT JOIN model_type t2 ON t1.model_name = t2.model_name WHERE t2.type_code = 4 GROUP BY t1.model_name"
-    return get_chart_data(sql)
-
-
-@app.route('/api/chart-data5')
-def api_chart_data5():
-    sql = "SELECT t1.model_name, COUNT(t1.model_name) AS count FROM model_data t1 LEFT JOIN model_type t2 ON t1.model_name = t2.model_name WHERE t2.type_code = 5 GROUP BY t1.model_name"
-    return get_chart_data(sql)
-
-
 @app.route('/api/chart-data-detail1')
 def chart_data_detail1():
     model_name = request.args.get('modelName')
-    sjrq = request.args.get('sjrq')          # 新增日期参数，格式：YYYY-MM-DD
+    sjrq = request.args.get('sjrq')
+    jgbm = request.args.get('jgbm')          # 新增：机构编码筛选（可选）
 
-    # 参数校验：model_name 和 sjrq 都是必须的（根据你的要求）
+    # 参数校验：model_name 和 sjrq 必须存在
     if not model_name or not sjrq:
-        return jsonify({"error": "缺少 modelName 或 sjrq 参数"}), 400
+        return Response(json.dumps({"error": "缺少 modelName 或 sjrq 参数", "code": 400}, ensure_ascii=False),
+                    mimetype='application/json')
 
-    data2 = []  # config 字段值列表（field1~field20）
-    data = []   # data 多条记录的值列表（field1~field20）
+    data2 = []  # config 字段值列表（包含所有字段）
+    data = []   # data 多条记录的值列表（每行所有字段）
 
     try:
         conn = get_db()
         cursor = conn.cursor()
         cursor2 = conn.cursor()
 
-        # ---------- 修改后的 model_data 查询 ----------
-        # 1. SELECT 中增加了 jgmc, jgbm, sjrq
-        # 2. WHERE 中增加了 t1.sjrq = ?
+        # ---------- 动态构建 model_data 查询 ----------
         sql = """
             SELECT t1.id, t1.model_name,
                    t1.jgmc, t1.jgbm, t1.sjrq,
@@ -289,12 +272,19 @@ def chart_data_detail1():
             FROM model_data t1
             WHERE t1.model_name = ? AND t1.sjrq = ?
         """
-        cursor.execute(sql, (model_name, sjrq))
+        params = [model_name, sjrq]
+
+        # 如果提供了机构编码，则添加筛选条件
+        if jgbm:
+            sql += " AND t1.jgbm = ?"
+            params.append(jgbm)
+
+        cursor.execute(sql, params)
         rows = cursor.fetchall()
 
-        # model_config 查询（你也可以选择同步加上 jgmc, jgbm, sjrq，但不需要日期条件）
+        # model_config 查询（不需要机构筛选）
         sql2 = """
-            SELECT t1.model_name,t1.jgmc, t1.jgbm, t1.sjrq,
+            SELECT t1.model_name, t1.jgmc, t1.jgbm, t1.sjrq,
                    t1.field1, t1.field2, t1.field3, t1.field4, t1.field5,
                    t1.field6, t1.field7, t1.field8, t1.field9, t1.field10,
                    t1.field11, t1.field12, t1.field13, t1.field14, t1.field15,
@@ -306,10 +296,11 @@ def chart_data_detail1():
         cursor2.execute(sql2, (model_name,))
         rows2 = cursor2.fetchall()
 
+        # 处理 model_data 数据
         for row in rows:
-            data.append(list(row))  # list(row) 会按 SELECT 顺序提取所有列的值
+            data.append(list(row))
 
-            # 处理 model_config：将第一行转换为列表
+        # 处理 model_config 数据
         if rows2:
             data2 = list(rows2[0])
 
@@ -325,6 +316,177 @@ def chart_data_detail1():
     # 返回格式：[config_fields, data_rows]
     res = [data2, data]
     return Response(json.dumps(res, ensure_ascii=False), mimetype="application/json")
+
+@app.route('/api/org-list')
+def org_list():
+    model_name = request.args.get('modelName')
+    if not model_name:
+        return Response(json.dumps({"error": "缺少 modelName 参数","code":400}, ensure_ascii=False),mimetype='application/json')
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        sql = """
+            SELECT DISTINCT jgmc, jgbm
+            FROM model_data
+            WHERE model_name = ? AND jgmc IS NOT NULL AND jgbm IS NOT NULL
+            ORDER BY jgmc
+        """
+        cursor.execute(sql, (model_name,))
+        rows = cursor.fetchall()
+        result = [{"jgmc": row["jgmc"], "jgbm": row["jgbm"]} for row in rows]
+        cursor.close()
+        conn.close()
+        return Response(
+            json.dumps(result, ensure_ascii=False),
+            mimetype='application/json'
+        )
+    except Exception as e:
+        print("查询机构列表错误：", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/org-type-stats')
+def org_type_stats():
+    # 必传参数：startDate, endDate
+    start_date = request.args.get('startDate')
+    end_date = request.args.get('endDate')
+
+    # 校验必传参数
+    if not start_date or not end_date:
+        return jsonify({"error": "缺少必传参数：startDate 和 endDate"}), 400
+
+    # 可选参数：jgmc（机构名称）
+    jgmc = request.args.get('jgmc')
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # 基础 SQL：统计每个机构的各模型类型记录数，限定日期范围
+        sql = """
+            SELECT 
+                md.jgmc AS 机构名称,
+                md.jgbm AS 机构编码,
+                COUNT(CASE WHEN mt.type_code = 1 THEN 1 END) AS 模型类型1记录数,
+                COUNT(CASE WHEN mt.type_code = 2 THEN 1 END) AS 模型类型2记录数,
+                COUNT(CASE WHEN mt.type_code = 3 THEN 1 END) AS 模型类型3记录数,
+                COUNT(CASE WHEN mt.type_code = 4 THEN 1 END) AS 模型类型4记录数,
+                COUNT(CASE WHEN mt.type_code = 5 THEN 1 END) AS 模型类型5记录数
+            FROM model_data md
+            LEFT JOIN model_type mt ON md.model_name = mt.model_name
+            WHERE md.sjrq BETWEEN ? AND ?
+        """
+        params = [start_date, end_date]
+
+        # 可选：按机构名称筛选
+        if jgmc:
+            sql += " AND md.jgmc = ?"
+            params.append(jgmc)
+
+        sql += " GROUP BY md.jgmc, md.jgbm ORDER BY md.jgmc"
+
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+
+        # 将 sqlite3.Row 对象转换为字典列表
+        result = [dict(row) for row in rows]
+
+        cursor.close()
+        conn.close()
+        return Response(
+            json.dumps(result, ensure_ascii=False),
+            mimetype='application/json'
+        )
+    except Exception as e:
+        print("机构类型统计查询错误：", e)
+        return jsonify({"error": str(e)}), 500
+
+
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta  # 需要安装 python-dateutil
+
+
+# 如果没有安装，可以使用 pip install python-dateutil
+# 或者用下面提供的纯 Python 替代函数
+from datetime import datetime
+import calendar
+
+
+@app.route('/api/chart-data-monthly')
+def chart_data_monthly():
+    type_code = request.args.get('typeCode')
+    start_date = request.args.get('startDate')  # 格式：yyyymmdd，如 20260101
+    end_date = request.args.get('endDate')
+
+    if not type_code or not start_date or not end_date:
+        return jsonify({"error": "缺少必传参数：typeCode, startDate, endDate"}), 400
+
+    # 校验日期格式（8位数字）
+    if not (start_date.isdigit() and len(start_date) == 8 and end_date.isdigit() and len(end_date) == 8):
+        return jsonify({"error": "日期格式必须为 yyyymmdd，如 20260101"}), 400
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # 按月分组统计，关联 model_type 表，过滤 type_code
+        # 假设 md.sjrq 存储格式也是 yyyymmdd 字符串，直接字符串比较
+        sql = """
+            SELECT 
+                SUBSTR(md.sjrq, 1, 6) AS month,
+                COUNT(*) AS count
+            FROM model_data md
+            INNER JOIN model_type mt ON md.model_name = mt.model_name
+            WHERE mt.type_code = ?
+                AND md.sjrq BETWEEN ? AND ?
+            GROUP BY SUBSTR(md.sjrq, 1, 6)
+            ORDER BY month
+        """
+        cursor.execute(sql, (type_code, start_date, end_date))
+        rows = cursor.fetchall()
+
+        # 将查询结果转成字典 {yyyymm: count}
+        data_map = {row["month"]: row["count"] for row in rows}
+
+        # 生成从 start_date 到 end_date 的所有月份（yyyymm）
+        start_year = int(start_date[:4])
+        start_month = int(start_date[4:6])
+        end_year = int(end_date[:4])
+        end_month = int(end_date[4:6])
+
+        months_yyyymm = []
+        year = start_year
+        month = start_month
+        while (year < end_year) or (year == end_year and month <= end_month):
+            months_yyyymm.append(f"{year}{month:02d}")
+            # 增加一个月
+            if month == 12:
+                month = 1
+                year += 1
+            else:
+                month += 1
+
+        # 构建结果集，将 yyyymm 转为 yyyy-mm 格式，并补全0
+        result = []
+        for yyyymm in months_yyyymm:
+            count = data_map.get(yyyymm, 0)
+            # 转换为 yyyy-mm 格式便于前端显示
+            formatted_month = f"{yyyymm[:4]}-{yyyymm[4:]}"
+            result.append({"month": formatted_month, "count": count})
+
+        cursor.close()
+        conn.close()
+
+        return Response(
+            json.dumps(result, ensure_ascii=False),
+            mimetype='application/json'
+        )
+    except Exception as e:
+        print("按月统计查询错误：", e)
+        return jsonify({"error": str(e)}), 500
+
+
 
 
 if __name__ == '__main__':
