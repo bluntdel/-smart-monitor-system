@@ -259,57 +259,59 @@ def api_chart_data5():
     return get_chart_data(sql)
 
 
-@app.route('/api/chart-data-detail1/<model_name>')
-def chart_data_detail1(model_name):
-    data2 = []  # config 字段值列表
-    data = []  # data 多条记录的值列表
+@app.route('/api/chart-data-detail1')
+def chart_data_detail1():
+    model_name = request.args.get('modelName')
+    sjrq = request.args.get('sjrq')          # 新增日期参数，格式：YYYY-MM-DD
+
+    # 参数校验：model_name 和 sjrq 都是必须的（根据你的要求）
+    if not model_name or not sjrq:
+        return jsonify({"error": "缺少 modelName 或 sjrq 参数"}), 400
+
+    data2 = []  # config 字段值列表（field1~field20）
+    data = []   # data 多条记录的值列表（field1~field20）
+
     try:
         conn = get_db()
         cursor = conn.cursor()
         cursor2 = conn.cursor()
 
-        # 注意：SQL 占位符改为 ?
+        # ---------- 修改后的 model_data 查询 ----------
+        # 1. SELECT 中增加了 jgmc, jgbm, sjrq
+        # 2. WHERE 中增加了 t1.sjrq = ?
         sql = """
             SELECT t1.id, t1.model_name,
+                   t1.jgmc, t1.jgbm, t1.sjrq,
                    t1.field1, t1.field2, t1.field3, t1.field4, t1.field5,
                    t1.field6, t1.field7, t1.field8, t1.field9, t1.field10,
                    t1.field11, t1.field12, t1.field13, t1.field14, t1.field15,
                    t1.field16, t1.field17, t1.field18, t1.field19, t1.field20
             FROM model_data t1
-            WHERE t1.model_name = ?
+            WHERE t1.model_name = ? AND t1.sjrq = ?
         """
+        cursor.execute(sql, (model_name, sjrq))
+        rows = cursor.fetchall()
+
+        # model_config 查询（你也可以选择同步加上 jgmc, jgbm, sjrq，但不需要日期条件）
         sql2 = """
-            SELECT t1.model_name,
+            SELECT t1.model_name,t1.jgmc, t1.jgbm, t1.sjrq,
                    t1.field1, t1.field2, t1.field3, t1.field4, t1.field5,
                    t1.field6, t1.field7, t1.field8, t1.field9, t1.field10,
                    t1.field11, t1.field12, t1.field13, t1.field14, t1.field15,
                    t1.field16, t1.field17, t1.field18, t1.field19, t1.field20
             FROM model_config t1
-            LEFT JOIN model_data t2 ON t1.model_name = t2.model_name
             WHERE t1.model_name = ?
             LIMIT 1
         """
-
-        cursor.execute(sql, (model_name,))
         cursor2.execute(sql2, (model_name,))
-
-        rows = cursor.fetchall()
         rows2 = cursor2.fetchall()
 
-        # 处理 model_data 多条记录
         for row in rows:
-            datatmp = []
-            for i in range(1, 21):
-                field = f"field{i}"
-                datatmp.append(row[field] if row[field] is not None else "")
-            data.append(datatmp)
+            data.append(list(row))  # list(row) 会按 SELECT 顺序提取所有列的值
 
-        # 处理 model_config 单条记录
+            # 处理 model_config：将第一行转换为列表
         if rows2:
-            row2 = rows2[0]
-            for i in range(1, 21):
-                field = f"field{i}"
-                data2.append(row2[field] if row2[field] is not None else "")
+            data2 = list(rows2[0])
 
         cursor.close()
         cursor2.close()
@@ -317,10 +319,10 @@ def chart_data_detail1(model_name):
 
     except Exception as e:
         print("查询错误：", e)
-        # 确保返回空列表
         data2 = []
         data = []
 
+    # 返回格式：[config_fields, data_rows]
     res = [data2, data]
     return Response(json.dumps(res, ensure_ascii=False), mimetype="application/json")
 
