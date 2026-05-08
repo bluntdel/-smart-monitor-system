@@ -317,6 +317,112 @@ def chart_data_detail1():
     res = [data2, data]
     return Response(json.dumps(res, ensure_ascii=False), mimetype="application/json")
 
+from flask import request, send_file, jsonify
+import io
+import openpyxl
+from openpyxl.styles import Font, Alignment
+
+@app.route('/api/export-excel')
+def export_excel():
+    # 接收参数（与原接口一致）
+    model_name = request.args.get('modelName')
+    sjrq = request.args.get('sjrq')
+    jgbm = request.args.get('jgbm')
+
+    if not model_name or not sjrq:
+        return jsonify({"error": "缺少 modelName 或 sjrq 参数"}), 400
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # ---------- 查询 model_config（获取字段顺序/表头） ----------
+        sql_config = """
+            SELECT t1.model_name, t1.jgmc, t1.jgbm, t1.sjrq,
+                   t1.field1, t1.field2, t1.field3, t1.field4, t1.field5,
+                   t1.field6, t1.field7, t1.field8, t1.field9, t1.field10,
+                   t1.field11, t1.field12, t1.field13, t1.field14, t1.field15,
+                   t1.field16, t1.field17, t1.field18, t1.field19, t1.field20
+            FROM model_config t1
+            WHERE t1.model_name = ?
+            LIMIT 1
+        """
+        cursor.execute(sql_config, (model_name,))
+        config_row = cursor.fetchone()
+        if not config_row:
+            return jsonify({"error": "未找到模型配置"}), 404
+
+        # 获取表头（字段名）
+        headers = [desc[0] for desc in cursor.description]
+
+        # ---------- 查询 model_data（明细数据） ----------
+        sql_data = """
+            SELECT t1.id, t1.model_name, t1.jgmc, t1.jgbm, t1.sjrq,
+                   t1.field1, t1.field2, t1.field3, t1.field4, t1.field5,
+                   t1.field6, t1.field7, t1.field8, t1.field9, t1.field10,
+                   t1.field11, t1.field12, t1.field13, t1.field14, t1.field15,
+                   t1.field16, t1.field17, t1.field18, t1.field19, t1.field20
+            FROM model_data t1
+            WHERE t1.model_name = ? AND t1.sjrq = ?
+        """
+        params = [model_name, sjrq]
+        if jgbm:
+            sql_data += " AND t1.jgbm = ?"
+            params.append(jgbm)
+
+        cursor.execute(sql_data, params)
+        data_rows = cursor.fetchall()
+        conn.close()
+
+    except Exception as e:
+        print("导出失败：", e)
+        return jsonify({"error": str(e)}), 500
+
+    # ---------- 生成 Excel ----------
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"{model_name}_{sjrq}"
+
+    # 写入表头（加粗、居中）
+    for col_idx, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal='center')
+
+    # 写入数据行
+    for row_idx, row_data in enumerate(data_rows, start=2):
+        for col_idx, val in enumerate(row_data, start=1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+
+    # 自动调整列宽（可选）
+    for col in ws.columns:
+        max_len = 0
+        col_letter = col[0].column_letter
+        for cell in col:
+            if cell.value:
+                try:
+                    max_len = max(max_len, len(str(cell.value)))
+                except:
+                    pass
+        adjusted_width = min(max_len + 2, 30)
+        ws.column_dimensions[col_letter].width = adjusted_width
+
+    # 保存到内存字节流
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    # 构造下载文件名
+    filename = f"{model_name}_{sjrq}_{jgbm if jgbm else 'all'}.xlsx"
+    # 使用 send_file 返回
+    return send_file(
+        output,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=filename   # Flask 2.0+ 使用 download_name；旧版可用 attachment_filename
+    )
+
+
 @app.route('/api/org-list')
 def org_list():
     model_name = request.args.get('modelName')
