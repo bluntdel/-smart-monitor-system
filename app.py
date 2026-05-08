@@ -216,19 +216,23 @@ def dashboard_ref():
 @app.route('/api/chart-data')
 def api_chart_data1():
     type_code = request.args.get('typeCode')
+    month = request.args.get('month')
     if not type_code:
         return jsonify({"error": "缺少必传参数：typeCode!"}), 400
+    if not month:
+        return jsonify({"error": "缺少必传参数：month!"}), 400
     sql = """
            SELECT t1.model_name, COUNT(t1.model_name) AS count
            FROM model_data t1
            LEFT JOIN model_type t2 ON t1.model_name = t2.model_name
-           WHERE t2.type_code = ?
+           WHERE t2.type_code = ? and SUBSTR(t1.sjrq, 1, 6)=?
+
            GROUP BY t1.model_name
        """
     try:
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute(sql, (type_code,))
+        cursor.execute(sql, (type_code,month))
         rows = cursor.fetchall()
         data = [{"model_name": row["model_name"], "count": row["count"]} for row in rows]
         cursor.close()
@@ -322,12 +326,16 @@ import io
 import openpyxl
 from openpyxl.styles import Font, Alignment
 
+from flask import request, send_file, jsonify
+import io
+import openpyxl
+from openpyxl.styles import Font, Alignment
+
 @app.route('/api/export-excel')
 def export_excel():
-    # 接收参数（与原接口一致）
     model_name = request.args.get('modelName')
     sjrq = request.args.get('sjrq')
-    jgbm = request.args.get('jgbm')
+    jgbm = request.args.get('jgbm')          # 可选
 
     if not model_name or not sjrq:
         return jsonify({"error": "缺少 modelName 或 sjrq 参数"}), 400
@@ -336,15 +344,17 @@ def export_excel():
         conn = get_db()
         cursor = conn.cursor()
 
-        # ---------- 查询 model_config（获取字段顺序/表头） ----------
+        # ---------- 1. 查询 model_config，获取固定字段的值（如 model_name, jgmc, jgbm, sjrq） ----------
+        #    注意：这里只取固定字段用于标题（但实际标题我们使用字段名即可）
+        #    也可以查询整行配置，以便获取 field1~field20 的动态标题
         sql_config = """
-            SELECT t1.model_name, t1.jgmc, t1.jgbm, t1.sjrq,
-                   t1.field1, t1.field2, t1.field3, t1.field4, t1.field5,
-                   t1.field6, t1.field7, t1.field8, t1.field9, t1.field10,
-                   t1.field11, t1.field12, t1.field13, t1.field14, t1.field15,
-                   t1.field16, t1.field17, t1.field18, t1.field19, t1.field20
-            FROM model_config t1
-            WHERE t1.model_name = ?
+            SELECT model_name, jgmc, jgbm, sjrq,
+                   field1, field2, field3, field4, field5,
+                   field6, field7, field8, field9, field10,
+                   field11, field12, field13, field14, field15,
+                   field16, field17, field18, field19, field20
+            FROM model_config
+            WHERE model_name = ?
             LIMIT 1
         """
         cursor.execute(sql_config, (model_name,))
@@ -352,49 +362,68 @@ def export_excel():
         if not config_row:
             return jsonify({"error": "未找到模型配置"}), 404
 
-        # 获取表头（字段名）
-        headers = [desc[0] for desc in cursor.description]
+        # 定义固定字段列表（这些字段在 model_config 中出现在 field1 之前，且在 model_data 中也存在）
+        fixed_columns = ['model_name', 'jgmc', 'jgbm', 'sjrq']
+        # 固定字段的标题：直接使用字段名（也可以自定义为中文，根据需求调整）
+        fixed_headers = ['模型名称', '机构名称', '机构编码', '数据日期']   # 更友好的中文标题
 
-        # ---------- 查询 model_data（明细数据） ----------
+        # 动态字段标题：从 config_row 中提取 field1~field20 的值（5个一组，共20个）
+        # config_row 的结构：前4个是 model_name, jgmc, jgbm, sjrq，接着是 field1~field20
+        dynamic_raw = config_row[4:]   # 从第5个元素开始是 field1~field20
+        # 保证有20个，不足补 None
+        dynamic_raw = list(dynamic_raw) + [None] * (20 - len(dynamic_raw))
+        dynamic_headers = []
+        for idx, val in enumerate(dynamic_raw, start=1):
+            if val and str(val).strip():
+                dynamic_headers.append(str(val).strip())
+            else:
+                dynamic_headers.append(f"列{idx}")   # 空值时使用默认标题
+
+        # 合并所有标题：固定标题 + 动态标题
+        all_headers = fixed_headers + dynamic_headers
+
+        # ---------- 2. 查询 model_data 明细数据（包含固定列 + field1~field20） ----------
+        # 注意：model_data 中也有 model_name, jgmc, jgbm, sjrq 等字段，需要一起导出
         sql_data = """
-            SELECT t1.id, t1.model_name, t1.jgmc, t1.jgbm, t1.sjrq,
-                   t1.field1, t1.field2, t1.field3, t1.field4, t1.field5,
-                   t1.field6, t1.field7, t1.field8, t1.field9, t1.field10,
-                   t1.field11, t1.field12, t1.field13, t1.field14, t1.field15,
-                   t1.field16, t1.field17, t1.field18, t1.field19, t1.field20
-            FROM model_data t1
-            WHERE t1.model_name = ? AND t1.sjrq = ?
+            SELECT model_name, jgmc, jgbm, sjrq,
+                   field1, field2, field3, field4, field5,
+                   field6, field7, field8, field9, field10,
+                   field11, field12, field13, field14, field15,
+                   field16, field17, field18, field19, field20
+            FROM model_data
+            WHERE model_name = ? AND sjrq = ?
         """
         params = [model_name, sjrq]
         if jgbm:
-            sql_data += " AND t1.jgbm = ?"
+            sql_data += " AND jgbm = ?"
             params.append(jgbm)
 
         cursor.execute(sql_data, params)
-        data_rows = cursor.fetchall()
+        data_rows = cursor.fetchall()   # 每条记录包含固定列（4个） + 动态列（20个）
+
         conn.close()
 
     except Exception as e:
         print("导出失败：", e)
         return jsonify({"error": str(e)}), 500
 
-    # ---------- 生成 Excel ----------
+    # ---------- 3. 生成 Excel ----------
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = f"{model_name}_{sjrq}"
 
-    # 写入表头（加粗、居中）
-    for col_idx, header in enumerate(headers, start=1):
+    # 写入表头
+    for col_idx, header in enumerate(all_headers, start=1):
         cell = ws.cell(row=1, column=col_idx, value=header)
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal='center')
 
     # 写入数据行
     for row_idx, row_data in enumerate(data_rows, start=2):
-        for col_idx, val in enumerate(row_data, start=1):
-            ws.cell(row=row_idx, column=col_idx, value=val)
+        for col_idx, value in enumerate(row_data, start=1):
+            ws.cell(row=row_idx, column=col_idx, value=value)
 
-    # 自动调整列宽（可选）
+    # 可选：自动调整列宽
     for col in ws.columns:
         max_len = 0
         col_letter = col[0].column_letter
@@ -404,24 +433,21 @@ def export_excel():
                     max_len = max(max_len, len(str(cell.value)))
                 except:
                     pass
-        adjusted_width = min(max_len + 2, 30)
+        adjusted_width = min(max_len + 2, 40)
         ws.column_dimensions[col_letter].width = adjusted_width
 
-    # 保存到内存字节流
+    # 保存到内存
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
 
-    # 构造下载文件名
     filename = f"{model_name}_{sjrq}_{jgbm if jgbm else 'all'}.xlsx"
-    # 使用 send_file 返回
     return send_file(
         output,
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True,
-        download_name=filename   # Flask 2.0+ 使用 download_name；旧版可用 attachment_filename
+        download_name=filename
     )
-
 
 @app.route('/api/org-list')
 def org_list():
@@ -452,8 +478,105 @@ def org_list():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/model-list')
+def model_list():
+    """
+    获取所有可用的模型名称列表（关联 model_type 表，支持按 typeCode 过滤）
+    可选参数：typeCode - 类型编码
+    返回格式：[{"modelName": "模型A"}, ...]
+    """
+    type_code = request.args.get('typeCode')
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # 基础 SQL：关联 model_config 和 model_type
+        sql = """
+            SELECT DISTINCT mc.model_name
+            FROM model_config mc
+            INNER JOIN model_type mt ON mc.model_name = mt.model_name
+            WHERE mc.model_name IS NOT NULL AND mc.model_name != ''
+        """
+        params = []
+
+        # 如果提供了 typeCode，则添加过滤条件
+        if type_code:
+            sql += " AND mt.type_code = ?"
+            params.append(type_code)
+
+        sql += " ORDER BY mc.model_name"
+
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        result = [{"modelName": row["model_name"]} for row in rows]
+
+        cursor.close()
+        conn.close()
+        return Response(
+            json.dumps(result, ensure_ascii=False),
+            mimetype='application/json'
+        )
+    except Exception as e:
+        print("查询模型列表错误：", e)
+        return jsonify({"error": str(e)}), 500
 @app.route('/api/org-type-stats')
 def org_type_stats():
+    # 必传参数：startDate, endDate
+    month = request.args.get('month')
+
+    # 校验必传参数
+    if not month:
+        return jsonify({"error": "缺少必传参数：month"}), 400
+
+    # 可选参数：jgmc（机构名称）
+    jgmc = request.args.get('jgmc')
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # 基础 SQL：统计每个机构的各模型类型记录数，限定日期范围
+        sql = """
+            SELECT 
+                md.jgmc AS 机构名称,
+                md.jgbm AS 机构编码,
+                COUNT(CASE WHEN mt.type_code = 1 THEN 1 END) AS 模型类型1记录数,
+                COUNT(CASE WHEN mt.type_code = 2 THEN 1 END) AS 模型类型2记录数,
+                COUNT(CASE WHEN mt.type_code = 3 THEN 1 END) AS 模型类型3记录数,
+                COUNT(CASE WHEN mt.type_code = 4 THEN 1 END) AS 模型类型4记录数,
+                COUNT(CASE WHEN mt.type_code = 5 THEN 1 END) AS 模型类型5记录数
+            FROM model_data md
+            LEFT JOIN model_type mt ON md.model_name = mt.model_name
+            WHERE SUBSTR(md.sjrq, 1, 6)= ?
+        """
+        params = [month]
+
+        # 可选：按机构名称筛选
+        if jgmc:
+            sql += " AND md.jgmc = ?"
+            params.append(jgmc)
+
+        sql += " GROUP BY md.jgmc, md.jgbm ORDER BY md.jgmc"
+
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+
+        # 将 sqlite3.Row 对象转换为字典列表
+        result = [dict(row) for row in rows]
+
+        cursor.close()
+        conn.close()
+        return Response(
+            json.dumps(result, ensure_ascii=False),
+            mimetype='application/json'
+        )
+    except Exception as e:
+        print("机构类型统计查询错误：", e)
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/org-type-stats2')
+def org_type_stats2():
     # 必传参数：startDate, endDate
     start_date = request.args.get('startDate')
     end_date = request.args.get('endDate')
