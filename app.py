@@ -30,11 +30,14 @@ def init_db():
     conn = get_db()
     cursor = conn.cursor()
 
-    # 创建 model_config 表
+    # 创建 model_config 表（新增 jgmc, jgbm, sjrq）
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS model_config (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             model_name TEXT NOT NULL UNIQUE,
+            jgmc TEXT,
+            jgbm TEXT,
+            sjrq TEXT,
             field1 TEXT, field2 TEXT, field3 TEXT, field4 TEXT, field5 TEXT,
             field6 TEXT, field7 TEXT, field8 TEXT, field9 TEXT, field10 TEXT,
             field11 TEXT, field12 TEXT, field13 TEXT, field14 TEXT, field15 TEXT,
@@ -42,11 +45,14 @@ def init_db():
         )
     ''')
 
-    # 创建 model_data 表
+    # 创建 model_data 表（新增 jgmc, jgbm, sjrq）
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS model_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             model_name TEXT NOT NULL,
+            jgmc TEXT,
+            jgbm TEXT,
+            sjrq TEXT,
             field1 TEXT, field2 TEXT, field3 TEXT, field4 TEXT, field5 TEXT,
             field6 TEXT, field7 TEXT, field8 TEXT, field9 TEXT, field10 TEXT,
             field11 TEXT, field12 TEXT, field13 TEXT, field14 TEXT, field15 TEXT,
@@ -55,7 +61,7 @@ def init_db():
         )
     ''')
 
-    # 创建 model_type 表（如果使用）
+    # 创建 model_type 表（不变）
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS model_type (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,7 +72,6 @@ def init_db():
 
     conn.commit()
     conn.close()
-
 
 # 应用启动时初始化数据库
 with app.app_context():
@@ -99,8 +104,16 @@ def dashboard_ref():
             flash('文件至少需要两行数据', 'danger')
             return redirect('/')
 
-        first_row = data[0]
-        model_name = get_val(data[1], 0)
+        first_row = data[0]  # 表头行
+        model_name = get_val(data[1], 0)  # 第二行第一列作为模型名称
+
+        # 从表头行提取三个新字段的标题
+        jgmc_title = get_val(first_row, 1)
+        jgbm_title = get_val(first_row, 2)
+        sjrq_title = get_val(first_row, 3)
+
+        # 提取 field1~field20 的标题（从第4列开始，共20列）
+        field_titles = [get_val(first_row, i) for i in range(4, 24)]
 
         conn = get_db()
         cursor = conn.cursor()
@@ -108,51 +121,40 @@ def dashboard_ref():
         if model_name:
             cursor.execute("SELECT id FROM model_config WHERE model_name = ?", (model_name,))
             if not cursor.fetchone():
+                # 插入 model_config 时包含三个新字段
                 cursor.execute('''
                     INSERT INTO model_config (
-                        model_name,
-                        field1,field2,field3,field4,field5,
-                        field6,field7,field8,field9,field10,
-                        field11,field12,field13,field14,field15,
-                        field16,field17,field18,field19,field20
-                    ) VALUES (
-                        ?,?,?,?,?,?,
-                        ?,?,?,?,?,
-                        ?,?,?,?,?,
-                        ?,?,?,?,?
-                    )
+                        model_name, jgmc, jgbm, sjrq,
+                        field1, field2, field3, field4, field5,
+                        field6, field7, field8, field9, field10,
+                        field11, field12, field13, field14, field15,
+                        field16, field17, field18, field19, field20
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     model_name,
-                    get_val(first_row, 1), get_val(first_row, 2), get_val(first_row, 3), get_val(first_row, 4),
-                    get_val(first_row, 5),
-                    get_val(first_row, 6), get_val(first_row, 7), get_val(first_row, 8), get_val(first_row, 9),
-                    get_val(first_row, 10),
-                    get_val(first_row, 11), get_val(first_row, 12), get_val(first_row, 13), get_val(first_row, 14),
-                    get_val(first_row, 15),
-                    get_val(first_row, 16), get_val(first_row, 17), get_val(first_row, 18), get_val(first_row, 19),
-                    get_val(first_row, 20)
+                    jgmc_title, jgbm_title, sjrq_title,
+                    *field_titles  # Python 3.6+ 支持展开列表
                 ))
 
-        for row in data[1:]:
+        # 插入 model_data 数据行
+        for row in data[1:]:  # 从第二行开始是数据行
             cursor.execute('''
                 INSERT INTO model_data (
-                    model_name,
-                    field1,field2,field3,field4,field5,
-                    field6,field7,field8,field9,field10,
-                    field11,field12,field13,field14,field15,
-                    field16,field17,field18,field19,field20
-                ) VALUES (
-                    ?,?,?,?,?,?,
-                    ?,?,?,?,?,
-                    ?,?,?,?,?,
-                    ?,?,?,?,?
-                )
+                    model_name, jgmc, jgbm, sjrq,
+                    field1, field2, field3, field4, field5,
+                    field6, field7, field8, field9, field10,
+                    field11, field12, field13, field14, field15,
+                    field16, field17, field18, field19, field20
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                get_val(row, 0),
-                get_val(row, 1), get_val(row, 2), get_val(row, 3), get_val(row, 4), get_val(row, 5),
-                get_val(row, 6), get_val(row, 7), get_val(row, 8), get_val(row, 9), get_val(row, 10),
-                get_val(row, 11), get_val(row, 12), get_val(row, 13), get_val(row, 14), get_val(row, 15),
-                get_val(row, 16), get_val(row, 17), get_val(row, 18), get_val(row, 19), get_val(row, 20)
+                get_val(row, 0),  # model_name
+                get_val(row, 1),  # jgmc
+                get_val(row, 2),  # jgbm
+                get_val(row, 3),  # sjrq
+                get_val(row, 4), get_val(row, 5), get_val(row, 6), get_val(row, 7), get_val(row, 8),
+                get_val(row, 9), get_val(row, 10), get_val(row, 11), get_val(row, 12), get_val(row, 13),
+                get_val(row, 14), get_val(row, 15), get_val(row, 16), get_val(row, 17), get_val(row, 18),
+                get_val(row, 19), get_val(row, 20), get_val(row, 21), get_val(row, 22), get_val(row, 23)
             ))
 
         conn.commit()

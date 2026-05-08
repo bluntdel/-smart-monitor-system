@@ -3,9 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <title>数据驾驶舱</title>
-    <script src="https://cdn.jsdelivr.net/npm/vue@2/dist/vue.js"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/element-ui/lib/theme-chalk/index.css">
-    <script src="https://cdn.jsdelivr.net/npm/element-ui/lib/index.js"></script>
+<!--    <script src="https://cdn.jsdelivr.net/npm/vue@2/dist/vue.js"></script>-->
+    <!-- 1. Vue 核心库 (必须最先) -->
+<script src="{{ url_for('static', filename='js/vue.js') }}"></script>
+<script src="{{ url_for('static', filename='js/index.js') }}"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/element-ui.css') }}">
+
     <style>
         *{margin:0;padding:0;box-sizing:border-box;font-family:"Microsoft YaHei"}
         body{background:#0a1a30;color:#fff;min-height:100vh}

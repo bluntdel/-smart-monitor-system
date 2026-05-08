@@ -50,7 +50,9 @@
 {% endblock %}
 
 {% block script %}
-<script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
+<!--<script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.4.3/echarts.min.js"></script>-->
+<script src="{{ url_for('static', filename='js/echarts.js') }}"></script>
+
 <script>
 // 最简单、最稳定、绝不崩溃
 new Vue({
