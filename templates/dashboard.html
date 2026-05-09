@@ -14,7 +14,7 @@
 
 <!-- 导入弹窗 -->
 <el-dialog title="📁 导入Excel数据" :visible.sync="importDialog" width="500px">
-  <form method="POST" enctype="multipart/form-data">
+  <form method="POST" enctype="multipart/form-data" action="/import">
     <div style="padding:20px 0; text-align:center">
       <input type="file" name="file" accept=".xlsx,.xls" required style="margin-bottom:15px">
     </div>

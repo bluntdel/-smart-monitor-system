@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, flash, redirect, jsonify, Response
+from flask import Flask, render_template, request, flash, redirect, jsonify, Response,url_for,  send_file
 import pandas as pd
 import sqlite3
 import os
@@ -9,10 +9,12 @@ from datetime import date
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "default-secret-key")
+app.secret_key = 'your-secret-key'
 
-UPLOAD_FOLDER = "uploads"
+# 必须配置上传文件夹
+UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER   
 
 # SQLite 数据库文件路径（从环境变量读取，默认为 app.db）
 DB_PATH = os.getenv("DB_PATH", "app.db")
@@ -85,65 +87,43 @@ def get_val(arr, idx):
         return ""
 
 
-@app.route('/', methods=['GET', 'POST'])
-def dashboard_ref():
-    if request.method == 'POST':
-        file = request.files.get('file')
-        if not file or not file.filename.endswith(('.xlsx', '.xls')):
-            flash('请上传正确的 Excel 文件', 'danger')
-            return redirect('/')
+# ---------- 独立导入接口 ----------
+@app.route('/import', methods=['POST'])
+def import_excel():
+    file = request.files.get('file')
+    if not file or not file.filename.endswith(('.xlsx', '.xls')):
+        flash('请上传正确的 Excel 文件', 'danger')
+        return redirect(url_for('dashboard'))
 
-        file_path = os.path.join(UPLOAD_FOLDER, file.filename)
-        file.save(file_path)
+    # 使用 app.config['UPLOAD_FOLDER']
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
+    file.save(file_path)
 
-        df = pd.read_excel(file_path, engine='openpyxl', header=None)
-        data = df.values.tolist()
+    df = pd.read_excel(file_path, engine='openpyxl', header=None)
+    data = df.values.tolist()
 
-        if len(data) < 2:
-            flash('文件至少需要两行数据', 'danger')
-            return redirect('/')
+    if len(data) < 2:
+        flash('文件至少需要两行数据', 'danger')
+        return redirect(url_for('dashboard'))
 
-        first_row = data[0]          # 表头行
-        model_name = get_val(data[1], 0)   # 第二行第一列作为模型名称
+    first_row = data[0]
+    model_name = get_val(data[1], 0)
 
-        # ========= 关键：Excel 中第2列现在是 jgbm，第3列是 jgmc =========
-        jgbm_title = get_val(first_row, 1)   # 原 jgmc 位置现在存的是 jgbm
-        jgmc_title = get_val(first_row, 2)   # 原 jgbm 位置现在存的是 jgmc
-        sjrq_title = get_val(first_row, 3)
+    # 根据 Excel 列映射：第2列 -> jgbm，第3列 -> jgmc
+    jgbm_title = get_val(first_row, 1)
+    jgmc_title = get_val(first_row, 2)
+    sjrq_title = get_val(first_row, 3)
 
-        # 提取 field1~field20 标题（第4列起，共20列）
-        field_titles = [get_val(first_row, i) for i in range(4, 24)]
+    field_titles = [get_val(first_row, i) for i in range(4, 24)]
 
-        conn = get_db()
-        cursor = conn.cursor()
+    conn = get_db()
+    cursor = conn.cursor()
 
-        # 1. 插入 model_config（表结构已改为：model_name, jgbm, jgmc, sjrq, field1...）
-        if model_name:
-            cursor.execute("SELECT id FROM model_config WHERE model_name = ?", (model_name,))
-            if not cursor.fetchone():
-                cursor.execute('''
-                    INSERT INTO model_config (
-                        model_name, jgbm, jgmc, sjrq,
-                        field1, field2, field3, field4, field5,
-                        field6, field7, field8, field9, field10,
-                        field11, field12, field13, field14, field15,
-                        field16, field17, field18, field19, field20
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    model_name,
-                    jgbm_title, jgmc_title, sjrq_title,   # 顺序：先 jgbm 后 jgmc
-                    *field_titles
-                ))
-
-        # 2. 插入 model_data（同样字段顺序：model_name, jgbm, jgmc, sjrq, field1...）
-        for row in data[1:]:
-            # 注意取值映射：row[1] 现在是 jgbm，row[2] 是 jgmc
-            jgbm_val = get_val(row, 1)
-            jgmc_val = get_val(row, 2)
-            sjrq_val = get_val(row, 3)
-
+    if model_name:
+        cursor.execute("SELECT id FROM model_config WHERE model_name = ?", (model_name,))
+        if not cursor.fetchone():
             cursor.execute('''
-                INSERT INTO model_data (
+                INSERT INTO model_config (
                     model_name, jgbm, jgmc, sjrq,
                     field1, field2, field3, field4, field5,
                     field6, field7, field8, field9, field10,
@@ -151,24 +131,46 @@ def dashboard_ref():
                     field16, field17, field18, field19, field20
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                get_val(row, 0),   # model_name
-                jgbm_val,          # jgbm
-                jgmc_val,          # jgmc
-                sjrq_val,          # sjrq
-                get_val(row, 4), get_val(row, 5), get_val(row, 6), get_val(row, 7), get_val(row, 8),
-                get_val(row, 9), get_val(row, 10), get_val(row, 11), get_val(row, 12), get_val(row, 13),
-                get_val(row, 14), get_val(row, 15), get_val(row, 16), get_val(row, 17), get_val(row, 18),
-                get_val(row, 19), get_val(row, 20), get_val(row, 21), get_val(row, 22), get_val(row, 23)
+                model_name,
+                jgbm_title, jgmc_title, sjrq_title,
+                *field_titles
             ))
 
-        conn.commit()
-        cursor.close()
-        conn.close()
+    for row in data[1:]:
+        jgbm_val = get_val(row, 1)
+        jgmc_val = get_val(row, 2)
+        sjrq_val = get_val(row, 3)
 
-        flash(f"导入成功！模型名称：{model_name}", "success")
-        return redirect('/')
+        cursor.execute('''
+            INSERT INTO model_data (
+                model_name, jgbm, jgmc, sjrq,
+                field1, field2, field3, field4, field5,
+                field6, field7, field8, field9, field10,
+                field11, field12, field13, field14, field15,
+                field16, field17, field18, field19, field20
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            get_val(row, 0),
+            jgbm_val,
+            jgmc_val,
+            sjrq_val,
+            get_val(row, 4), get_val(row, 5), get_val(row, 6), get_val(row, 7), get_val(row, 8),
+            get_val(row, 9), get_val(row, 10), get_val(row, 11), get_val(row, 12), get_val(row, 13),
+            get_val(row, 14), get_val(row, 15), get_val(row, 16), get_val(row, 17), get_val(row, 18),
+            get_val(row, 19), get_val(row, 20), get_val(row, 21), get_val(row, 22), get_val(row, 23)
+        ))
 
-    # ---------- 以下为驾驶舱统计（与原逻辑相同，无需修改）----------
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+    flash(f"导入成功！模型名称：{model_name}", "success")
+    return redirect(url_for('dashboard'))
+
+# ---------- 驾驶舱页面（仅 GET） ----------
+@app.route('/')
+def dashboard():
+    """驾驶舱首页，展示统计图表"""
     conn = get_db()
     cursor = conn.cursor()
 
@@ -212,6 +214,8 @@ def dashboard_ref():
                            todayImport=todayImport,
                            top5Models=top5Models,
                            orgData=orgData)
+
+
 @app.route('/api/chart-data-all')
 def api_chart_data():
     month = request.args.get('month')
