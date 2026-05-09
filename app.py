@@ -87,7 +87,6 @@ def get_val(arr, idx):
 
 @app.route('/', methods=['GET', 'POST'])
 def dashboard_ref():
-    # ---------- 原有导入逻辑（占位符修改为 ?）----------
     if request.method == 'POST':
         file = request.files.get('file')
         if not file or not file.filename.endswith(('.xlsx', '.xls')):
@@ -104,27 +103,27 @@ def dashboard_ref():
             flash('文件至少需要两行数据', 'danger')
             return redirect('/')
 
-        first_row = data[0]  # 表头行
-        model_name = get_val(data[1], 0)  # 第二行第一列作为模型名称
+        first_row = data[0]          # 表头行
+        model_name = get_val(data[1], 0)   # 第二行第一列作为模型名称
 
-        # 从表头行提取三个新字段的标题
-        jgmc_title = get_val(first_row, 1)
-        jgbm_title = get_val(first_row, 2)
+        # ========= 关键：Excel 中第2列现在是 jgbm，第3列是 jgmc =========
+        jgbm_title = get_val(first_row, 1)   # 原 jgmc 位置现在存的是 jgbm
+        jgmc_title = get_val(first_row, 2)   # 原 jgbm 位置现在存的是 jgmc
         sjrq_title = get_val(first_row, 3)
 
-        # 提取 field1~field20 的标题（从第4列开始，共20列）
+        # 提取 field1~field20 标题（第4列起，共20列）
         field_titles = [get_val(first_row, i) for i in range(4, 24)]
 
         conn = get_db()
         cursor = conn.cursor()
 
+        # 1. 插入 model_config（表结构已改为：model_name, jgbm, jgmc, sjrq, field1...）
         if model_name:
             cursor.execute("SELECT id FROM model_config WHERE model_name = ?", (model_name,))
             if not cursor.fetchone():
-                # 插入 model_config 时包含三个新字段
                 cursor.execute('''
                     INSERT INTO model_config (
-                        model_name, jgmc, jgbm, sjrq,
+                        model_name, jgbm, jgmc, sjrq,
                         field1, field2, field3, field4, field5,
                         field6, field7, field8, field9, field10,
                         field11, field12, field13, field14, field15,
@@ -132,25 +131,30 @@ def dashboard_ref():
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     model_name,
-                    jgmc_title, jgbm_title, sjrq_title,
-                    *field_titles  # Python 3.6+ 支持展开列表
+                    jgbm_title, jgmc_title, sjrq_title,   # 顺序：先 jgbm 后 jgmc
+                    *field_titles
                 ))
 
-        # 插入 model_data 数据行
-        for row in data[1:]:  # 从第二行开始是数据行
+        # 2. 插入 model_data（同样字段顺序：model_name, jgbm, jgmc, sjrq, field1...）
+        for row in data[1:]:
+            # 注意取值映射：row[1] 现在是 jgbm，row[2] 是 jgmc
+            jgbm_val = get_val(row, 1)
+            jgmc_val = get_val(row, 2)
+            sjrq_val = get_val(row, 3)
+
             cursor.execute('''
                 INSERT INTO model_data (
-                    model_name, jgmc, jgbm, sjrq,
+                    model_name, jgbm, jgmc, sjrq,
                     field1, field2, field3, field4, field5,
                     field6, field7, field8, field9, field10,
                     field11, field12, field13, field14, field15,
                     field16, field17, field18, field19, field20
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                get_val(row, 0),  # model_name
-                get_val(row, 1),  # jgmc
-                get_val(row, 2),  # jgbm
-                get_val(row, 3),  # sjrq
+                get_val(row, 0),   # model_name
+                jgbm_val,          # jgbm
+                jgmc_val,          # jgmc
+                sjrq_val,          # sjrq
                 get_val(row, 4), get_val(row, 5), get_val(row, 6), get_val(row, 7), get_val(row, 8),
                 get_val(row, 9), get_val(row, 10), get_val(row, 11), get_val(row, 12), get_val(row, 13),
                 get_val(row, 14), get_val(row, 15), get_val(row, 16), get_val(row, 17), get_val(row, 18),
@@ -164,11 +168,10 @@ def dashboard_ref():
         flash(f"导入成功！模型名称：{model_name}", "success")
         return redirect('/')
 
-    # ---------- 驾驶舱统计数据 ----------
+    # ---------- 以下为驾驶舱统计（与原逻辑相同，无需修改）----------
     conn = get_db()
     cursor = conn.cursor()
 
-    # 全局概览
     cursor.execute("SELECT COUNT(*) AS cnt FROM model_config")
     totalModel = cursor.fetchone()['cnt']
 
@@ -182,7 +185,6 @@ def dashboard_ref():
     cursor.execute("SELECT COUNT(*) AS cnt FROM model_data WHERE DATE(create_time)=?", (today,))
     todayImport = cursor.fetchone()['cnt']
 
-    # 五大模型统计
     cursor.execute("""
         SELECT model_name, COUNT(*) AS cnt 
         FROM model_data 
@@ -192,7 +194,6 @@ def dashboard_ref():
     """)
     top5Models = cursor.fetchall()
 
-    # 机构汇总
     cursor.execute("""
         SELECT model_name, COUNT(*) AS count 
         FROM model_data 
@@ -211,6 +212,153 @@ def dashboard_ref():
                            todayImport=todayImport,
                            top5Models=top5Models,
                            orgData=orgData)
+@app.route('/api/chart-data-all')
+def api_chart_data():
+    month = request.args.get('month')
+    if not month:
+        return jsonify({"error": "缺少必传参数：month!"}), 400
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # 1. 查询各类型在指定月份的实际统计数量
+        sql_stats = """
+            SELECT mt.type_code, COUNT(*) AS count
+            FROM model_data md
+            INNER JOIN model_type mt ON md.model_name = mt.model_name
+            WHERE SUBSTR(md.sjrq, 1, 6) = ?
+            GROUP BY mt.type_code
+        """
+        cursor.execute(sql_stats, (month,))
+        rows = cursor.fetchall()
+        stats_map = {row["type_code"]: row["count"] for row in rows}
+
+        # 2. 获取所有类型及其描述（从 model_type 表查询去重）
+        sql_types = """
+            SELECT DISTINCT type_code, type_des
+            FROM model_type
+            WHERE type_code IN (1,2,3,4,5)
+            ORDER BY type_code
+        """
+        cursor.execute(sql_types)
+        type_rows = cursor.fetchall()
+        # 如果表没有 type_des 字段，或者查询为空，则使用默认映射
+        if not type_rows:
+            # 默认描述映射
+            type_desc_map = {1: "类型1", 2: "类型2", 3: "类型3", 4: "类型4", 5: "类型5"}
+        else:
+            type_desc_map = {row["type_code"]: row["type_des"] for row in type_rows}
+
+        # 3. 定义所有类型（1~5），补全缺失类型
+        all_types = [1, 2, 3, 4, 5]
+        result = []
+        for type_code in all_types:
+            count = stats_map.get(type_code, 0)
+            type_des = type_desc_map.get(type_code, f"类型{type_code}")
+            result.append({"type_code": type_code, "typeDes": type_des, "count": count})
+
+        cursor.close()
+        conn.close()
+        return Response(
+            json.dumps(result, ensure_ascii=False),
+            mimetype='application/json'
+        )
+    except Exception as e:
+        print("查询错误：", e)
+        return jsonify([])
+
+@app.route('/api/chart-data-monthly-all')
+def chart_data_monthly_type():
+    start_date = request.args.get('startDate')
+    end_date = request.args.get('endDate')
+    if not start_date or not end_date:
+        return jsonify({"error": "缺少必传参数：startDate 和 endDate"}), 400
+
+    if not (start_date.isdigit() and len(start_date) == 8 and end_date.isdigit() and len(end_date) == 8):
+        return jsonify({"error": "日期格式必须为 yyyymmdd，如 20260101"}), 400
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        # 1. 查询类型描述映射
+        sql_types = """
+            SELECT DISTINCT type_code, type_des
+            FROM model_type
+            WHERE type_code IN (1,2,3,4,5)
+            ORDER BY type_code
+        """
+        cursor.execute(sql_types)
+        type_rows = cursor.fetchall()
+        if type_rows:
+            type_desc_map = {row["type_code"]: row["type_des"] for row in type_rows}
+        else:
+            type_desc_map = {1: "类型1", 2: "类型2", 3: "类型3", 4: "类型4", 5: "类型5"}
+
+        # 2. 查询实际数据：按月份和类型分组统计
+        sql = """
+            SELECT SUBSTR(md.sjrq, 1, 6) AS month, mt.type_code, COUNT(*) AS count
+            FROM model_data md
+            INNER JOIN model_type mt ON md.model_name = mt.model_name
+            WHERE md.sjrq BETWEEN ? AND ?
+            GROUP BY SUBSTR(md.sjrq, 1, 6), mt.type_code
+            ORDER BY month, mt.type_code
+        """
+        cursor.execute(sql, (start_date, end_date))
+        rows = cursor.fetchall()
+
+        # 转换为字典 {(month, type_code): count}
+        data_map = {}
+        for row in rows:
+            key = (row["month"], row["type_code"])
+            data_map[key] = row["count"]
+
+        # 3. 生成完整月份列表
+        start_year = int(start_date[:4])
+        start_month = int(start_date[4:6])
+        end_year = int(end_date[:4])
+        end_month = int(end_date[4:6])
+
+        months = []
+        year, month = start_year, start_month
+        while (year < end_year) or (year == end_year and month <= end_month):
+            months.append(f"{year}{month:02d}")
+            if month == 12:
+                month = 1
+                year += 1
+            else:
+                month += 1
+
+        all_types = [1, 2, 3, 4, 5]
+
+        # 4. 构建嵌套结果：每个月份下 data 为对象数组
+        result = []
+        for month in months:
+            data_list = []
+            for tc in all_types:
+                count = data_map.get((month, tc), 0)
+                type_des = type_desc_map.get(tc, f"类型{tc}")
+                data_list.append({
+                    "type_code": tc,
+                    "typeDes": type_des,
+                    "count": count
+                })
+            formatted_month = f"{month[:4]}-{month[4:]}"
+            result.append({
+                "month": formatted_month,
+                "data": data_list
+            })
+
+        cursor.close()
+        conn.close()
+        return Response(
+            json.dumps(result, ensure_ascii=False),
+            mimetype='application/json'
+        )
+    except Exception as e:
+        print("按月类型统计查询错误：", e)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/api/chart-data')
@@ -249,12 +397,12 @@ def api_chart_data1():
 @app.route('/api/chart-data-detail1')
 def chart_data_detail1():
     model_name = request.args.get('modelName')
-    sjrq = request.args.get('sjrq')
+    month = request.args.get('month')
     jgbm = request.args.get('jgbm')          # 新增：机构编码筛选（可选）
 
     # 参数校验：model_name 和 sjrq 必须存在
-    if not model_name or not sjrq:
-        return Response(json.dumps({"error": "缺少 modelName 或 sjrq 参数", "code": 400}, ensure_ascii=False),
+    if not model_name or not month:
+        return Response(json.dumps({"error": "缺少 modelName 或 month 参数", "code": 400}, ensure_ascii=False),
                     mimetype='application/json')
 
     data2 = []  # config 字段值列表（包含所有字段）
@@ -274,9 +422,9 @@ def chart_data_detail1():
                    t1.field11, t1.field12, t1.field13, t1.field14, t1.field15,
                    t1.field16, t1.field17, t1.field18, t1.field19, t1.field20
             FROM model_data t1
-            WHERE t1.model_name = ? AND t1.sjrq = ?
+            WHERE t1.model_name = ? AND SUBSTR(t1.sjrq, 1, 6)= ?
         """
-        params = [model_name, sjrq]
+        params = [model_name, month]
 
         # 如果提供了机构编码，则添加筛选条件
         if jgbm:
@@ -334,21 +482,20 @@ from openpyxl.styles import Font, Alignment
 @app.route('/api/export-excel')
 def export_excel():
     model_name = request.args.get('modelName')
-    sjrq = request.args.get('sjrq')
+    month = request.args.get('month')
     jgbm = request.args.get('jgbm')          # 可选
 
-    if not model_name or not sjrq:
-        return jsonify({"error": "缺少 modelName 或 sjrq 参数"}), 400
+    if not model_name or not month:
+        return jsonify({"error": "缺少 modelName 或 month 参数"}), 400
 
     try:
         conn = get_db()
         cursor = conn.cursor()
 
         # ---------- 1. 查询 model_config，获取固定字段的值（如 model_name, jgmc, jgbm, sjrq） ----------
-        #    注意：这里只取固定字段用于标题（但实际标题我们使用字段名即可）
-        #    也可以查询整行配置，以便获取 field1~field20 的动态标题
+        #    这里只取配置用于动态标题，查询顺序不影响最终结果
         sql_config = """
-            SELECT model_name, jgmc, jgbm, sjrq,
+            SELECT model_name, jgbm, jgmc, sjrq,
                    field1, field2, field3, field4, field5,
                    field6, field7, field8, field9, field10,
                    field11, field12, field13, field14, field15,
@@ -362,45 +509,41 @@ def export_excel():
         if not config_row:
             return jsonify({"error": "未找到模型配置"}), 404
 
-        # 定义固定字段列表（这些字段在 model_config 中出现在 field1 之前，且在 model_data 中也存在）
-        fixed_columns = ['model_name', 'jgmc', 'jgbm', 'sjrq']
-        # 固定字段的标题：直接使用字段名（也可以自定义为中文，根据需求调整）
-        fixed_headers = ['模型名称', '机构名称', '机构编码', '数据日期']   # 更友好的中文标题
+        # 固定字段（Excel中的顺序：模型名称、机构编码、机构名称、数据日期）
+        fixed_headers = ['模型名称', '机构编码', '机构名称', '数据日期']
 
-        # 动态字段标题：从 config_row 中提取 field1~field20 的值（5个一组，共20个）
-        # config_row 的结构：前4个是 model_name, jgmc, jgbm, sjrq，接着是 field1~field20
-        dynamic_raw = config_row[4:]   # 从第5个元素开始是 field1~field20
-        # 保证有20个，不足补 None
+        # 动态字段标题：从 config_row 中提取 field1~field20
+        dynamic_raw = config_row[4:]   # 从第5个元素（field1）开始
         dynamic_raw = list(dynamic_raw) + [None] * (20 - len(dynamic_raw))
         dynamic_headers = []
         for idx, val in enumerate(dynamic_raw, start=1):
             if val and str(val).strip():
                 dynamic_headers.append(str(val).strip())
             else:
-                dynamic_headers.append(f"列{idx}")   # 空值时使用默认标题
+                dynamic_headers.append(f"列{idx}")
 
-        # 合并所有标题：固定标题 + 动态标题
         all_headers = fixed_headers + dynamic_headers
 
-        # ---------- 2. 查询 model_data 明细数据（包含固定列 + field1~field20） ----------
-        # 注意：model_data 中也有 model_name, jgmc, jgbm, sjrq 等字段，需要一起导出
+        # ---------- 2. 查询 model_data 明细数据 ----------
+        # 关键修改：SELECT 子句中固定字段的顺序必须与 all_headers 的固定部分一致
+        # 原顺序：model_name, jgmc, jgbm, sjrq
+        # 新顺序：model_name, jgbm, jgmc, sjrq
         sql_data = """
-            SELECT model_name, jgmc, jgbm, sjrq,
+            SELECT model_name, jgbm, jgmc, sjrq,
                    field1, field2, field3, field4, field5,
                    field6, field7, field8, field9, field10,
                    field11, field12, field13, field14, field15,
                    field16, field17, field18, field19, field20
             FROM model_data
-            WHERE model_name = ? AND sjrq = ?
+            WHERE model_name = ? AND SUBSTR(sjrq, 1, 6) = ?
         """
-        params = [model_name, sjrq]
+        params = [model_name, month]
         if jgbm:
             sql_data += " AND jgbm = ?"
             params.append(jgbm)
 
         cursor.execute(sql_data, params)
-        data_rows = cursor.fetchall()   # 每条记录包含固定列（4个） + 动态列（20个）
-
+        data_rows = cursor.fetchall()
         conn.close()
 
     except Exception as e:
@@ -410,7 +553,7 @@ def export_excel():
     # ---------- 3. 生成 Excel ----------
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = f"{model_name}_{sjrq}"
+    ws.title = f"{model_name}_{month}"
 
     # 写入表头
     for col_idx, header in enumerate(all_headers, start=1):
@@ -418,12 +561,12 @@ def export_excel():
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal='center')
 
-    # 写入数据行
+    # 写入数据行（此时 row_data 的列顺序已与 all_headers 完全一致）
     for row_idx, row_data in enumerate(data_rows, start=2):
         for col_idx, value in enumerate(row_data, start=1):
             ws.cell(row=row_idx, column=col_idx, value=value)
 
-    # 可选：自动调整列宽
+    # 自动调整列宽
     for col in ws.columns:
         max_len = 0
         col_letter = col[0].column_letter
@@ -436,19 +579,17 @@ def export_excel():
         adjusted_width = min(max_len + 2, 40)
         ws.column_dimensions[col_letter].width = adjusted_width
 
-    # 保存到内存
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
 
-    filename = f"{model_name}_{sjrq}_{jgbm if jgbm else 'all'}.xlsx"
+    filename = f"{model_name}_{month}_{jgbm if jgbm else 'all'}.xlsx"
     return send_file(
         output,
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True,
         download_name=filename
     )
-
 @app.route('/api/org-list')
 def org_list():
     model_name = request.args.get('modelName')
@@ -481,9 +622,9 @@ def org_list():
 @app.route('/api/model-list')
 def model_list():
     """
-    获取所有可用的模型名称列表（关联 model_type 表，支持按 typeCode 过滤）
+    获取所有可用的模型名称列表（基于 model_data 表，关联 model_type 支持按 typeCode 过滤）
     可选参数：typeCode - 类型编码
-    返回格式：[{"modelName": "模型A"}, ...]
+    返回格式：[{"model_name": "模型名称"}, ...]
     """
     type_code = request.args.get('typeCode')
 
@@ -491,25 +632,24 @@ def model_list():
         conn = get_db()
         cursor = conn.cursor()
 
-        # 基础 SQL：关联 model_config 和 model_type
+        # 查询所有不重复的 model_name，关联 model_type 支持过滤
         sql = """
-            SELECT DISTINCT mc.model_name
-            FROM model_config mc
-            INNER JOIN model_type mt ON mc.model_name = mt.model_name
-            WHERE mc.model_name IS NOT NULL AND mc.model_name != ''
+            SELECT DISTINCT md.model_name
+            FROM model_data md
+            INNER JOIN model_type mt ON md.model_name = mt.model_name
+            WHERE md.model_name IS NOT NULL AND md.model_name != ''
         """
         params = []
 
-        # 如果提供了 typeCode，则添加过滤条件
         if type_code:
             sql += " AND mt.type_code = ?"
             params.append(type_code)
 
-        sql += " ORDER BY mc.model_name"
+        sql += " ORDER BY md.model_name"
 
         cursor.execute(sql, params)
         rows = cursor.fetchall()
-        result = [{"modelName": row["model_name"]} for row in rows]
+        result = [{"model_name": row["model_name"]} for row in rows]
 
         cursor.close()
         conn.close()
@@ -518,7 +658,7 @@ def model_list():
             mimetype='application/json'
         )
     except Exception as e:
-        print("查询模型列表错误：", e)
+        print("查询模型名称列表错误：", e)
         return jsonify({"error": str(e)}), 500
 @app.route('/api/org-type-stats')
 def org_type_stats():
@@ -574,6 +714,9 @@ def org_type_stats():
     except Exception as e:
         print("机构类型统计查询错误：", e)
         return jsonify({"error": str(e)}), 500
+
+
+
 
 @app.route('/api/org-type-stats2')
 def org_type_stats2():
@@ -644,14 +787,13 @@ import calendar
 
 @app.route('/api/chart-data-monthly')
 def chart_data_monthly():
-    type_code = request.args.get('typeCode')
-    start_date = request.args.get('startDate')  # 格式：yyyymmdd，如 20260101
+    type_code = request.args.get('typeCode')   # 可选，若不传则统计所有模型
+    start_date = request.args.get('startDate')
     end_date = request.args.get('endDate')
 
-    if not type_code or not start_date or not end_date:
-        return jsonify({"error": "缺少必传参数：typeCode, startDate, endDate"}), 400
+    if not start_date or not end_date:
+        return jsonify({"error": "缺少必传参数：startDate, endDate"}), 400
 
-    # 校验日期格式（8位数字）
     if not (start_date.isdigit() and len(start_date) == 8 and end_date.isdigit() and len(end_date) == 8):
         return jsonify({"error": "日期格式必须为 yyyymmdd，如 20260101"}), 400
 
@@ -659,54 +801,92 @@ def chart_data_monthly():
         conn = get_db()
         cursor = conn.cursor()
 
-        # 按月分组统计，关联 model_type 表，过滤 type_code
-        # 假设 md.sjrq 存储格式也是 yyyymmdd 字符串，直接字符串比较
-        sql = """
-            SELECT 
-                SUBSTR(md.sjrq, 1, 6) AS month,
-                COUNT(*) AS count
-            FROM model_data md
-            INNER JOIN model_type mt ON md.model_name = mt.model_name
-            WHERE mt.type_code = ?
-                AND md.sjrq BETWEEN ? AND ?
-            GROUP BY SUBSTR(md.sjrq, 1, 6)
-            ORDER BY month
-        """
-        cursor.execute(sql, (type_code, start_date, end_date))
+        # 1. 获取该类型下的所有模型名称（如果 type_code 为空则取所有模型）
+        if type_code:
+            sql_models = """
+                SELECT DISTINCT md.model_name
+                FROM model_data md
+                INNER JOIN model_type mt ON md.model_name = mt.model_name
+                WHERE mt.type_code = ?
+                ORDER BY md.model_name
+            """
+            cursor.execute(sql_models, (type_code,))
+        else:
+            sql_models = """
+                SELECT DISTINCT md.model_name
+                FROM model_data md
+                ORDER BY md.model_name
+            """
+            cursor.execute(sql_models)
+        model_rows = cursor.fetchall()
+        model_names = [row["model_name"] for row in model_rows]
+
+        if not model_names:
+            return Response(json.dumps([], ensure_ascii=False), mimetype='application/json')
+
+        # 2. 查询实际数据：按月、按模型分组统计
+        if type_code:
+            sql_stats = """
+                SELECT 
+                    SUBSTR(md.sjrq, 1, 6) AS month,
+                    md.model_name,
+                    COUNT(*) AS count
+                FROM model_data md
+                INNER JOIN model_type mt ON md.model_name = mt.model_name
+                WHERE mt.type_code = ?
+                    AND md.sjrq BETWEEN ? AND ?
+                GROUP BY SUBSTR(md.sjrq, 1, 6), md.model_name
+                ORDER BY month, md.model_name
+            """
+            cursor.execute(sql_stats, (type_code, start_date, end_date))
+        else:
+            sql_stats = """
+                SELECT 
+                    SUBSTR(md.sjrq, 1, 6) AS month,
+                    md.model_name,
+                    COUNT(*) AS count
+                FROM model_data md
+                WHERE md.sjrq BETWEEN ? AND ?
+                GROUP BY SUBSTR(md.sjrq, 1, 6), md.model_name
+                ORDER BY month, md.model_name
+            """
+            cursor.execute(sql_stats, (start_date, end_date))
+
         rows = cursor.fetchall()
+        # 构建字典 {(month, model_name): count}
+        data_map = {}
+        for row in rows:
+            key = (row["month"], row["model_name"])
+            data_map[key] = row["count"]
 
-        # 将查询结果转成字典 {yyyymm: count}
-        data_map = {row["month"]: row["count"] for row in rows}
-
-        # 生成从 start_date 到 end_date 的所有月份（yyyymm）
+        # 3. 生成完整月份列表
         start_year = int(start_date[:4])
         start_month = int(start_date[4:6])
         end_year = int(end_date[:4])
         end_month = int(end_date[4:6])
 
         months_yyyymm = []
-        year = start_year
-        month = start_month
+        year, month = start_year, start_month
         while (year < end_year) or (year == end_year and month <= end_month):
             months_yyyymm.append(f"{year}{month:02d}")
-            # 增加一个月
             if month == 12:
                 month = 1
                 year += 1
             else:
                 month += 1
 
-        # 构建结果集，将 yyyymm 转为 yyyy-mm 格式，并补全0
+        # 4. 构建结果集：每个月份下，每个模型的数量
         result = []
         for yyyymm in months_yyyymm:
-            count = data_map.get(yyyymm, 0)
-            # 转换为 yyyy-mm 格式便于前端显示
-            formatted_month = f"{yyyymm[:4]}-{yyyymm[4:]}"
-            result.append({"month": formatted_month, "count": count})
+            month_str = f"{yyyymm[:4]}-{yyyymm[4:]}"
+            model_counts = []
+            for model_name in model_names:
+                count = data_map.get((yyyymm, model_name), 0)
+                model_counts.append({"model_name": model_name, "count": count})
+            result.append({"month": month_str, "data": model_counts})
 
         cursor.close()
         conn.close()
-
         return Response(
             json.dumps(result, ensure_ascii=False),
             mimetype='application/json'
@@ -714,7 +894,6 @@ def chart_data_monthly():
     except Exception as e:
         print("按月统计查询错误：", e)
         return jsonify({"error": str(e)}), 500
-
 
 
 
