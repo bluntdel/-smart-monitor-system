@@ -14,7 +14,7 @@ app.secret_key = 'your-secret-key'
 # 必须配置上传文件夹
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER   
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # SQLite 数据库文件路径（从环境变量读取，默认为 app.db）
 DB_PATH = os.getenv("DB_PATH", "app.db")
@@ -207,7 +207,7 @@ def dashboard():
     cursor.close()
     conn.close()
 
-    return render_template("dashboard.html",
+    return render_template("index.html",
                            totalModel=totalModel,
                            totalData=totalData,
                            totalOrg=totalOrg,
