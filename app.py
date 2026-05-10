@@ -272,6 +272,42 @@ def api_chart_data():
         print("查询错误：", e)
         return jsonify([])
 
+@app.route('/api/chart-org-data')
+def api_chart_org_data():
+    type_code = request.args.get('typeCode')
+    month = request.args.get('month')
+    jgmc = request.args.get('jgmc')
+    if not type_code:
+        return jsonify({"error": "缺少必传参数：typeCode!"}), 400
+    if not month:
+        return jsonify({"error": "缺少必传参数：month!"}), 400
+    if not jgmc:
+        return jsonify({"error": "缺少必传参数：jgmc!"}), 400
+
+    sql = """
+        SELECT t1.model_name, COUNT(t1.model_name) AS count
+        FROM model_data t1
+        LEFT JOIN model_type t2 ON t1.model_name = t2.model_name
+        WHERE t2.type_code = ? AND SUBSTR(t1.sjrq, 1, 6) = ? AND t1.jgmc = ?
+        GROUP BY t1.model_name
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute(sql, (type_code, month, jgmc))
+        rows = cursor.fetchall()
+        data = [{"model_name": row["model_name"], "count": row["count"]} for row in rows]
+        cursor.close()
+        conn.close()
+        return Response(
+            json.dumps(data, ensure_ascii=False),
+            mimetype='application/json'
+        )
+    except Exception as e:
+        print("查询错误：", e)
+        return jsonify([])
+
+
 @app.route('/api/chart-data-monthly-all')
 def chart_data_monthly_type():
     start_date = request.args.get('startDate')
