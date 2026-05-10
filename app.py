@@ -452,9 +452,11 @@ def chart_data_detail1():
         cursor2.execute(sql2, (model_name,))
         rows2 = cursor2.fetchall()
 
-        # 处理 model_data 数据
+        # 处理 model_data 数据（移除第一个id字段）
         for row in rows:
-            data.append(list(row))
+            row_list = list(row)
+            row_list.pop(0)  # 删除第一个元素（id字段）
+            data.append(row_list)
 
         # 处理 model_config 数据
         if rows2:
