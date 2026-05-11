@@ -8,6 +8,8 @@ from datetime import date
 import io
 import openpyxl
 from openpyxl.styles import Font, Alignment
+from datetime import datetime
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -34,52 +36,12 @@ def init_db():
     conn = get_db()
     cursor = conn.cursor()
 
-    # 创建 model_config 表（新增 jgmc, jgbm, sjrq）
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS model_config (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            model_name TEXT NOT NULL UNIQUE,
-            jgmc TEXT,
-            jgbm TEXT,
-            sjrq TEXT,
-            field1 TEXT, field2 TEXT, field3 TEXT, field4 TEXT, field5 TEXT,
-            field6 TEXT, field7 TEXT, field8 TEXT, field9 TEXT, field10 TEXT,
-            field11 TEXT, field12 TEXT, field13 TEXT, field14 TEXT, field15 TEXT,
-            field16 TEXT, field17 TEXT, field18 TEXT, field19 TEXT, field20 TEXT
-        )
-    ''')
-
-    # 创建 model_data 表（新增 jgmc, jgbm, sjrq）
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS model_data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            model_name TEXT NOT NULL,
-            jgmc TEXT,
-            jgbm TEXT,
-            sjrq TEXT,
-            field1 TEXT, field2 TEXT, field3 TEXT, field4 TEXT, field5 TEXT,
-            field6 TEXT, field7 TEXT, field8 TEXT, field9 TEXT, field10 TEXT,
-            field11 TEXT, field12 TEXT, field13 TEXT, field14 TEXT, field15 TEXT,
-            field16 TEXT, field17 TEXT, field18 TEXT, field19 TEXT, field20 TEXT,
-            create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-
-    # 创建 model_type 表（不变）
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS model_type (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            model_name TEXT NOT NULL,
-            type_code INTEGER
-        )
-    ''')
-
     conn.commit()
     conn.close()
 
 # 应用启动时初始化数据库
-with app.app_context():
-    init_db()
+# with app.app_context():
+#     init_db()
 
 
 def get_val(arr, idx):
@@ -90,6 +52,8 @@ def get_val(arr, idx):
 
 
 # ---------- 独立导入接口 ----------
+from datetime import datetime
+
 @app.route('/import', methods=['POST'])
 def import_excel():
     file = request.files.get('file')
@@ -140,24 +104,31 @@ def import_excel():
             insert_sql = f"INSERT INTO model_config ({','.join(all_fields)}) VALUES ({placeholders})"
             cursor.execute(insert_sql, all_values)
 
-    # 插入 model_data（保持原逻辑不变）
+    # --- 生成批次号（格式：模型名_年-月-日-时-分-秒）---
+    # 原代码：
+    # batch_no = f"{model_name}_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"
+
+    # 修改为：
+    base_name = os.path.splitext(file.filename)[0]
+    batch_no = f"{base_name}_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"    # 插入 model_data（增加 batch_no 列）
     for row in data[1:]:
         jgbm_val = get_val(row, 1)
         jgmc_val = get_val(row, 2)
         sjrq_val = get_val(row, 3)
         cursor.execute('''
             INSERT INTO model_data (
-                model_name, jgbm, jgmc, sjrq,
+                model_name, jgbm, jgmc, sjrq, batch_no,
                 field1, field2, field3, field4, field5,
                 field6, field7, field8, field9, field10,
                 field11, field12, field13, field14, field15,
                 field16, field17, field18, field19, field20
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             get_val(row, 0),
             jgbm_val,
             jgmc_val,
             sjrq_val,
+            batch_no,
             get_val(row, 4), get_val(row, 5), get_val(row, 6), get_val(row, 7), get_val(row, 8),
             get_val(row, 9), get_val(row, 10), get_val(row, 11), get_val(row, 12), get_val(row, 13),
             get_val(row, 14), get_val(row, 15), get_val(row, 16), get_val(row, 17), get_val(row, 18),
@@ -170,7 +141,6 @@ def import_excel():
 
     flash(f"导入成功！模型名称：{model_name}", "success")
     return redirect(url_for('dashboard'))
-
 
 
 # ---------- 驾驶舱页面（仅 GET） ----------
@@ -891,7 +861,7 @@ def model_list():
         sql = """
             SELECT DISTINCT md.model_name
             FROM model_data md
-            INNER JOIN model_type mt ON md.model_name = mt.model_name
+            lEFT JOIN model_type mt ON md.model_name = mt.model_name
             WHERE md.model_name IS NOT NULL AND md.model_name != ''
         """
         params = []
@@ -1244,6 +1214,84 @@ def update_model_config():
         print("更新模型配置错误：", e)
         return jsonify({"error": str(e)}), 500
 
+
+@app.route('/api/batch-stats')
+def batch_stats():
+    """
+    按批次号分组统计 model_data 中的记录数量
+    返回格式: [{"batch_no": "批次号", "count": 数量}, ...]
+    可选参数: limit - 限制返回的批次数量（默认返回全部）
+              order - 排序方式，可选 desc（倒序，默认）或 asc
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+
+        limit = request.args.get('limit', default=None, type=int)
+        order = request.args.get('order', default='desc', type=str)
+
+        sql = """
+            SELECT batch_no, COUNT(*) AS count
+            FROM model_data
+            WHERE batch_no IS NOT NULL AND batch_no != ''
+            GROUP BY batch_no
+        """
+        if order.lower() == 'desc':
+            sql += " ORDER BY batch_no DESC"
+        else:
+            sql += " ORDER BY batch_no ASC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (limit,)
+        else:
+            params = ()
+
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        result = [{"batch_no": row["batch_no"], "count": row["count"]} for row in rows]
+        cursor.close()
+        conn.close()
+        return Response(
+            json.dumps(result, ensure_ascii=False),
+            mimetype='application/json'
+        )
+    except Exception as e:
+        print("批次统计查询错误：", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/batch-delete', methods=['POST'])
+def batch_delete():
+    """
+    根据批次号删除 model_data 中的记录
+    参数（JSON 或 query string）: batch_no
+    返回: {"message": "删除成功", "deleted_count": n}
+    """
+    data = request.get_json(silent=True)
+    if data:
+        batch_no = data.get('batch_no')
+    else:
+        batch_no = request.args.get('batch_no')
+
+    if not batch_no:
+        return jsonify({"error": "缺少 batch_no 参数"}), 400
+
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM model_data WHERE batch_no = ?", (batch_no,))
+        deleted = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        if deleted == 0:
+            return jsonify({"message": f"未找到批次 {batch_no} 的数据", "deleted_count": 0}), 200
+        else:
+            return jsonify({"message": f"成功删除 {deleted} 条记录", "deleted_count": deleted}), 200
+    except Exception as e:
+        print("批次删除错误：", e)
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5000, debug=True)
