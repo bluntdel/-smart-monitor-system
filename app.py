@@ -1196,7 +1196,7 @@ def get_model_config():
         print("查询模型配置错误：", e)
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/model-config-upd', methods=['PUT'])
+@app.route('/api/model-config-upd', methods=['PUT','POST','GET'])
 def update_model_config():
     """
     根据id更新model_config配置
