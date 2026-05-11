@@ -53,6 +53,24 @@ def get_val(arr, idx):
 
 # ---------- 独立导入接口 ----------
 from datetime import datetime
+def get_val(arr, idx):
+    try:
+        val = arr[idx]
+        if val is None:
+            return ""
+        return str(val).strip()
+    except (IndexError, TypeError):
+        return ""
+
+def is_valid(value):
+    """检查值是否有效（非空、非 'None' 字符串）"""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped == '' or stripped.lower() == 'none' or stripped.lower() == 'nan':
+            return False
+    return True
 
 @app.route('/import', methods=['POST'])
 def import_excel():
@@ -74,47 +92,46 @@ def import_excel():
     first_row = data[0]
     model_name = get_val(data[1], 0)
 
-    # 表头提取
-    jgbm_title = get_val(first_row, 1)   # 第2列 -> jgbm
-    jgmc_title = get_val(first_row, 2)   # 第3列 -> jgmc
-    sjrq_title = get_val(first_row, 3)   # 第4列 -> sjrq
-    field_titles = [get_val(first_row, i) for i in range(4, 24)]  # field1~field20
+    # 表头提取（无需过滤）
+    jgbm_title = get_val(first_row, 1)
+    jgmc_title = get_val(first_row, 2)
+    sjrq_title = get_val(first_row, 3)
+    field_titles = [get_val(first_row, i) for i in range(4, 24)]
 
     conn = get_db()
     cursor = conn.cursor()
 
+    # 处理 model_config
     if model_name:
         cursor.execute("SELECT id FROM model_config WHERE model_name = ?", (model_name,))
         if not cursor.fetchone():
-            # 定义所有基础字段（顺序需与表结构一致）
             base_fields = ['model_name', 'jgbm', 'jgmc', 'sjrq'] + [f'field{i}' for i in range(1, 21)]
-            # 基础字段的值
             base_values = [model_name, jgbm_title, jgmc_title, sjrq_title] + field_titles
-
-            # 构建扩展字段列表及值：每个基础字段后紧跟 _des 和 _disable
             all_fields = []
             all_values = []
             for idx, field in enumerate(base_fields):
                 original_value = base_values[idx]
                 all_fields.extend([field, f'{field}_des', f'{field}_disable'])
-                all_values.extend([original_value, original_value, "1"])   # _des复制值，_disable固定为"1"
-
-            # 构建动态插入语句
+                all_values.extend([original_value, original_value, "1"])
             placeholders = ','.join(['?'] * len(all_fields))
             insert_sql = f"INSERT INTO model_config ({','.join(all_fields)}) VALUES ({placeholders})"
             cursor.execute(insert_sql, all_values)
 
-    # --- 生成批次号（格式：模型名_年-月-日-时-分-秒）---
-    # 原代码：
-    # batch_no = f"{model_name}_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"
-
-    # 修改为：
+    # --- 生成批次号 ---
     base_name = os.path.splitext(file.filename)[0]
-    batch_no = f"{base_name}_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"    # 插入 model_data（增加 batch_no 列）
+    batch_no = f"{base_name}_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"
+
+    # --- 过滤数据行，构建 dataFilter ---
+    dataFilter = []
     for row in data[1:]:
         jgbm_val = get_val(row, 1)
         jgmc_val = get_val(row, 2)
         sjrq_val = get_val(row, 3)
+        if is_valid(jgbm_val) and is_valid(jgmc_val) and is_valid(sjrq_val):
+            dataFilter.append(row)
+
+    # --- 插入 model_data（使用 dataFilter）---
+    for row in dataFilter:
         cursor.execute('''
             INSERT INTO model_data (
                 model_name, jgbm, jgmc, sjrq, batch_no,
@@ -125,9 +142,9 @@ def import_excel():
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             get_val(row, 0),
-            jgbm_val,
-            jgmc_val,
-            sjrq_val,
+            get_val(row, 1),
+            get_val(row, 2),
+            get_val(row, 3),
             batch_no,
             get_val(row, 4), get_val(row, 5), get_val(row, 6), get_val(row, 7), get_val(row, 8),
             get_val(row, 9), get_val(row, 10), get_val(row, 11), get_val(row, 12), get_val(row, 13),
@@ -139,7 +156,7 @@ def import_excel():
     cursor.close()
     conn.close()
 
-    flash(f"导入成功！模型名称：{model_name}", "success")
+    flash(f"导入成功！模型名称：{model_name}，共导入 {len(dataFilter)} 条有效数据（已过滤空机构信息）", "success")
     return redirect(url_for('dashboard'))
 
 
@@ -870,7 +887,7 @@ def model_list():
             sql += " AND mt.type_code = ?"
             params.append(type_code)
 
-        sql += " ORDER BY md.model_name"
+        sql += " ORDER BY md.create_time"
 
         cursor.execute(sql, params)
         rows = cursor.fetchall()
@@ -1237,9 +1254,9 @@ def batch_stats():
             GROUP BY batch_no
         """
         if order.lower() == 'desc':
-            sql += " ORDER BY batch_no DESC"
+            sql += " ORDER BY create_time DESC"
         else:
-            sql += " ORDER BY batch_no ASC"
+            sql += " ORDER BY create_time ASC"
         if limit is not None:
             sql += " LIMIT ?"
             params = (limit,)
@@ -1294,4 +1311,4 @@ def batch_delete():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    app.run(host='127.0.0.1', port=25125, debug=True)
