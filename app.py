@@ -9,6 +9,7 @@ import io
 import openpyxl
 from openpyxl.styles import Font, Alignment
 from datetime import datetime
+from openpyxl.utils import get_column_letter
 
 load_dotenv()
 
@@ -27,6 +28,7 @@ DB_PATH = os.getenv("DB_PATH", "app.db")
 def get_db():
     """返回 SQLite 数据库连接，设置 row_factory 使返回字典风格的行"""
     conn = sqlite3.connect(DB_PATH)
+    
     conn.row_factory = sqlite3.Row  # 允许通过列名访问，如 row['column_name']
     return conn
 
@@ -35,7 +37,7 @@ def init_db():
     """初始化数据库表（如果不存在）"""
     conn = get_db()
     cursor = conn.cursor()
-
+    printf(DB_PATH)
     conn.commit()
     conn.close()
 
@@ -82,7 +84,7 @@ def import_excel():
     file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
     file.save(file_path)
 
-    df = pd.read_excel(file_path, engine='openpyxl', header=None)
+    df = pd.read_excel(file_path, header=None)
     data = df.values.tolist()
 
     if len(data) < 2:
@@ -806,7 +808,7 @@ def export_excel():
         # 自动调整列宽
         for col in ws.columns:
             max_len = 0
-            col_letter = col[0].column_letter
+            col_letter = get_column_letter(col[0].column)
             for cell in col:
                 if cell.value:
                     try:
