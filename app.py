@@ -84,7 +84,7 @@ def import_excel():
     file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
     file.save(file_path)
 
-    df = pd.read_excel(file_path, header=None)
+    df = pd.read_excel(file_path,engine='xlrd', header=None)
     data = df.values.tolist()
 
     if len(data) < 2:
