@@ -1130,8 +1130,8 @@ def chart_data_monthly():
 @app.route('/api/model-config')
 def get_model_config():
     """
-    根据模型名称获取 model_config 完整配置信息
-    返回格式：{"id": 记录ID, "data": [{"字段名": 原值, "字段名_des": 描述, "字段名_disable": 禁用标志}, ...]}
+    根据模型名称获取 model_config 完整配置信息，并关联 model_type 获取类型代码
+    返回格式：{"id": 记录ID, "type_code": 类型代码, "data": [{"字段名": 原值, "字段名_des": 描述, "字段名_disable": 禁用标志}, ...]}
     """
     model_name = request.args.get('model_name')
     if not model_name:
@@ -1140,10 +1140,9 @@ def get_model_config():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        # 获取所有列名（动态，避免手动列出所有字段）
+        # 获取 model_config 所有列名
         cursor.execute("PRAGMA table_info(model_config)")
         all_columns = [row['name'] for row in cursor.fetchall()]
-        # 构建 SELECT 语句（查询所有列）
         sql = f"SELECT {','.join(all_columns)} FROM model_config WHERE model_name = ?"
         cursor.execute(sql, (model_name,))
         row = cursor.fetchone()
@@ -1153,7 +1152,12 @@ def get_model_config():
         row_dict = dict(row)
         record_id = row_dict.get('id')
 
-        # 基础字段列表（顺序决定了返回顺序）
+        # 关联查询 model_type 中的 type_code
+        cursor.execute("SELECT type_code FROM model_type WHERE model_name = ? LIMIT 1", (model_name,))
+        type_row = cursor.fetchone()
+        type_code = type_row['type_code'] if type_row else None
+
+        # 基础字段列表（决定返回顺序）
         base_fields = ['model_name', 'jgmc', 'jgbm', 'sjrq'] + [f'field{i}' for i in range(1, 21)]
 
         data = []
@@ -1170,6 +1174,7 @@ def get_model_config():
 
         result = {
             "id": record_id,
+            "type_code": type_code,   # 新增字段，与 id 平级
             "data": data
         }
 
@@ -1183,45 +1188,67 @@ def get_model_config():
         print("查询模型配置错误：", e)
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/model-config-upd', methods=['PUT','POST','GET'])
+
+import time
+import random
+
+@app.route('/api/model-config-upd', methods=['PUT', 'POST', 'GET'])
 def update_model_config():
-    """
-    根据id更新model_config配置
-    接收JSON数据，必须包含id字段，以及其他需要更新的字段
-    """
     data = request.get_json()
     if not data:
         return jsonify({"error": "请求体不能为空"}), 400
 
-    # 从JSON中获取id
-    if 'id' not in data:
-        return jsonify({"error": "缺少id字段"}), 400
+    required_fields = ['id', 'type_code', 'type_des']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({"error": f"缺少必传字段: {field}"}), 400
+
     record_id = data['id']
+    type_code = data['type_code']
+    type_des = data['type_des']
 
     try:
         conn = get_db()
         cursor = conn.cursor()
-        # 获取表的所有列名（排除id，因为主键通常不更新）
+
+        # 获取 model_name
+        cursor.execute("SELECT model_name FROM model_config WHERE id = ?", (record_id,))
+        config_row = cursor.fetchone()
+        if not config_row:
+            return jsonify({"error": f"未找到 id 为 {record_id} 的记录"}), 404
+        model_name = config_row['model_name']
+
+        # 更新 model_config（动态字段，与原逻辑一致）
         cursor.execute("PRAGMA table_info(model_config)")
         columns = [row['name'] for row in cursor.fetchall() if row['name'] != 'id']
-
-        # 构建动态UPDATE语句，只更新data中存在的字段
         update_fields = []
         params = []
         for col in columns:
-            if col in data:
+            if col in data and col not in ['type_code', 'type_des']:
                 update_fields.append(f"{col} = ?")
                 params.append(data[col])
+        if update_fields:
+            params.append(record_id)
+            sql = f"UPDATE model_config SET {', '.join(update_fields)} WHERE id = ?"
+            cursor.execute(sql, params)
 
-        if not update_fields:
-            return jsonify({"error": "没有提供需要更新的字段"}), 400
-
-        params.append(record_id)  # WHERE条件
-        sql = f"UPDATE model_config SET {', '.join(update_fields)} WHERE id = ?"
-        cursor.execute(sql, params)
-
-        if cursor.rowcount == 0:
-            return jsonify({"error": f"未找到id为{record_id}的记录"}), 404
+        # 处理 model_type 表
+        cursor.execute("SELECT id FROM model_type WHERE model_name = ?", (model_name,))
+        existing = cursor.fetchone()
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if existing:
+            # 更新
+            cursor.execute(
+                "UPDATE model_type SET type_code = ?, type_des = ? WHERE model_name = ?",
+                (type_code, type_des, model_name)
+            )
+        else:
+            # 新增：生成随机ID（时间戳毫秒 + 随机数）
+            random_id = int(time.time() * 1000) + random.randint(0, 9999)
+            cursor.execute(
+                "INSERT INTO model_type (id, model_name, type_code, type_des, create_time) VALUES (?, ?, ?, ?, ?)",
+                (random_id, model_name, type_code, type_des, current_time)
+            )
 
         conn.commit()
         cursor.close()
