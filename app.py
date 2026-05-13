@@ -332,23 +332,28 @@ def dashboard():
 
 @app.route('/api/chart-data-all')
 def api_chart_data():
-    month = request.args.get('month')
-    if not month:
-        return jsonify({"error": "缺少必传参数：month!"}), 400
+    start_date = request.args.get('startDate')
+    end_date = request.args.get('endDate')
+    if not start_date or not end_date:
+        return jsonify({"error": "缺少必传参数：startDate, endDate"}), 400
+
+    # 可选：校验日期格式（8位数字）
+    if not (start_date.isdigit() and len(start_date) == 8 and end_date.isdigit() and len(end_date) == 8):
+        return jsonify({"error": "日期格式必须为 yyyymmdd，如 20260101"}), 400
 
     try:
         conn = get_db()
         cursor = conn.cursor()
 
-        # 1. 查询各类型在指定月份的实际统计数量
+        # 1. 统计各类型在指定日期范围内的记录数量
         sql_stats = """
             SELECT mt.type_code, COUNT(*) AS count
             FROM model_data md
             INNER JOIN model_type mt ON md.model_name = mt.model_name
-            WHERE SUBSTR(md.sjrq, 1, 6) = ?
+            WHERE md.sjrq BETWEEN ? AND ?
             GROUP BY mt.type_code
         """
-        cursor.execute(sql_stats, (month,))
+        cursor.execute(sql_stats, (start_date, end_date))
         rows = cursor.fetchall()
         stats_map = {row["type_code"]: row["count"] for row in rows}
 
@@ -361,14 +366,13 @@ def api_chart_data():
         """
         cursor.execute(sql_types)
         type_rows = cursor.fetchall()
-        # 如果表没有 type_des 字段，或者查询为空，则使用默认映射
         if not type_rows:
             # 默认描述映射
             type_desc_map = {1: "类型1", 2: "类型2", 3: "类型3", 4: "类型4", 5: "类型5"}
         else:
             type_desc_map = {row["type_code"]: row["type_des"] for row in type_rows}
 
-        # 3. 定义所有类型（1~5），补全缺失类型
+        # 3. 补全所有类型（1~5）
         all_types = [1, 2, 3, 4, 5]
         result = []
         for type_code in all_types:
@@ -518,22 +522,26 @@ def chart_data_monthly_type():
 @app.route('/api/chart-data')
 def api_chart_data1():
     type_code = request.args.get('typeCode')
-    month = request.args.get('month')
-    jgbm = request.args.get('jgbm')          # 新增：机构名称（可选）
+    start_date = request.args.get('startDate')
+    end_date = request.args.get('endDate')
+    jgbm = request.args.get('jgbm')          # 机构编码（可选）
 
     if not type_code:
         return jsonify({"error": "缺少必传参数：typeCode!"}), 400
-    if not month:
-        return jsonify({"error": "缺少必传参数：month!"}), 400
+    if not start_date or not end_date:
+        return jsonify({"error": "缺少必传参数：startDate, endDate"}), 400
+    # 可选：校验日期格式（8位数字）
+    if not (start_date.isdigit() and len(start_date) == 8 and end_date.isdigit() and len(end_date) == 8):
+        return jsonify({"error": "日期格式必须为 yyyymmdd，如 20260101"}), 400
 
     # 基础 SQL
     sql = """
         SELECT t1.model_name, COUNT(t1.model_name) AS count
         FROM model_data t1
         INNER JOIN model_type t2 ON t1.model_name = t2.model_name
-        WHERE t2.type_code = ? AND SUBSTR(t1.sjrq, 1, 6) = ?
+        WHERE t2.type_code = ? AND t1.sjrq BETWEEN ? AND ?
     """
-    params = [type_code, month]
+    params = [type_code, start_date, end_date]
 
     # 可选机构筛选
     if jgbm:
@@ -558,10 +566,12 @@ def api_chart_data1():
         print("查询错误：", e)
         return jsonify([])
 
+
 @app.route('/api/chart-data-detail1')
 def chart_data_detail1():
     model_name = request.args.get('modelName')
-    month = request.args.get('month')
+    start_date = request.args.get('startDate')
+    end_date = request.args.get('endDate')
     jgbm = request.args.get('jgbm')
     # 分页参数
     page = request.args.get('page', 1, type=int)
@@ -572,8 +582,13 @@ def chart_data_detail1():
         per_page = 20
     offset = (page - 1) * per_page
 
-    if not model_name or not month:
-        return Response(json.dumps({"error": "缺少 modelName 或 month 参数", "code": 400}, ensure_ascii=False),
+    if not model_name or not start_date or not end_date:
+        return Response(json.dumps({"error": "缺少 modelName 或 startDate/endDate 参数", "code": 400}, ensure_ascii=False),
+                        mimetype='application/json')
+
+    # 可选：校验日期格式（8位数字）
+    if not (start_date.isdigit() and len(start_date) == 8 and end_date.isdigit() and len(end_date) == 8):
+        return Response(json.dumps({"error": "日期格式必须为 yyyymmdd，如 20260101", "code": 400}, ensure_ascii=False),
                         mimetype='application/json')
 
     try:
@@ -588,7 +603,6 @@ def chart_data_detail1():
         for f in base_fields:
             select_config.append(f + '_des')
             select_config.append(f + '_disable')
-        # 注意：不需要查询原始值，只取 _des, _disable
         sql_config = f"SELECT {','.join(select_config)} FROM model_config WHERE model_name = ? LIMIT 1"
         cursor.execute(sql_config, (model_name,))
         config_row = cursor.fetchone()
@@ -601,19 +615,18 @@ def chart_data_detail1():
         data_fields = []
         for f in base_fields:
             disable_val = config_row[f + '_disable']
-            if disable_val == "1":   # 只有禁用标志为 "1" 才展示
+            if disable_val == "1":
                 title = config_row[f + '_des'] or f
                 headers.append(title)
                 data_fields.append(f)
 
         if not data_fields:
-            # 没有可展示字段，返回空数据
             return Response(json.dumps({"headers": [], "data": [], "total": 0, "page": page, "per_page": per_page}, ensure_ascii=False),
                             mimetype='application/json')
 
-        # 构建 WHERE 条件（用于 COUNT 和 SELECT）
-        where_clause = "model_name = ? AND SUBSTR(sjrq, 1, 6) = ?"
-        params = [model_name, month]
+        # 构建 WHERE 条件（日期范围）
+        where_clause = "model_name = ? AND sjrq BETWEEN ? AND ?"
+        params = [model_name, start_date, end_date]
         if jgbm:
             where_clause += " AND jgbm = ?"
             params.append(jgbm)
@@ -631,7 +644,6 @@ def chart_data_detail1():
             WHERE {where_clause}
             LIMIT ? OFFSET ?
         """
-        # 复制参数列表，因为需要追加 LIMIT 和 OFFSET 参数
         data_params = params + [per_page, offset]
         cursor.execute(data_sql, data_params)
         rows = cursor.fetchall()
@@ -652,7 +664,6 @@ def chart_data_detail1():
         print("查询错误：", e)
         return Response(json.dumps({"error": str(e), "code": 500}, ensure_ascii=False),
                         mimetype='application/json')
-
 
 # @app.route('/api/chart-data-detail1')
 # def chart_data_detail1():
@@ -1023,17 +1034,23 @@ def model_list():
     except Exception as e:
         print("查询模型名称列表错误：", e)
         return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/org-type-stats')
 def org_type_stats():
     # 必传参数：startDate, endDate
-    month = request.args.get('month')
+    start_date = request.args.get('startDate')
+    end_date = request.args.get('endDate')
 
-    # 校验必传参数
-    if not month:
-        return jsonify({"error": "缺少必传参数：month"}), 400
+    if not start_date or not end_date:
+        return jsonify({"error": "缺少必传参数：startDate, endDate"}), 400
 
     # 可选参数：jgmc（机构名称）
     jgmc = request.args.get('jgmc')
+
+    # 日期格式校验（8位数字 yyyymmdd）
+    if not (start_date.isdigit() and len(start_date) == 8 and end_date.isdigit() and len(end_date) == 8):
+        return jsonify({"error": "日期格式必须为 yyyymmdd，如 20260101"}), 400
 
     try:
         conn = get_db()
@@ -1051,9 +1068,9 @@ def org_type_stats():
                 COUNT(CASE WHEN mt.type_code = 5 THEN 1 END) AS 模型类型5记录数
             FROM model_data md
             LEFT JOIN model_type mt ON md.model_name = mt.model_name
-            WHERE SUBSTR(md.sjrq, 1, 6)= ?
+            WHERE md.sjrq BETWEEN ? AND ?
         """
-        params = [month]
+        params = [start_date, end_date]
 
         # 可选：按机构名称筛选
         if jgmc:
@@ -1077,7 +1094,6 @@ def org_type_stats():
     except Exception as e:
         print("机构类型统计查询错误：", e)
         return jsonify({"error": str(e)}), 500
-
 
 
 
