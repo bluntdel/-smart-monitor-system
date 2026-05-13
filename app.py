@@ -78,14 +78,12 @@ def is_valid(value):
 def import_excel():
     files = request.files.getlist('file')
     if not files:
-        flash('请至少选择一个 Excel 文件', 'danger')
-        return redirect(url_for('dashboard'))
+        return jsonify({"code": 400, "msg": "请至少选择一个 Excel 文件"}), 200
 
     total_inserted = 0
     success_count = 0
     errors = []
 
-    # 2. 获取数据库连接（全局）
     conn = get_db()
     cursor = conn.cursor()
 
@@ -97,8 +95,7 @@ def import_excel():
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
         try:
             file.save(file_path)
-            # 自动选择引擎（openpyxl 或 xlrd）
-            df = pd.read_excel(file_path,engine='openpyxl', header=None)
+            df = pd.read_excel(file_path, engine='openpyxl', header=None)
             data = df.values.tolist()
 
             if len(data) < 2:
@@ -113,8 +110,8 @@ def import_excel():
             sjrq_title = get_val(first_row, 3)
             field_titles = [get_val(first_row, i) for i in range(4, 24)]
 
-            # 插入或忽略 model_config
             if model_name:
+                # 1. 处理 model_config（如果不存在则插入）
                 cursor.execute("SELECT id FROM model_config WHERE model_name = ?", (model_name,))
                 if not cursor.fetchone():
                     base_fields = ['model_name', 'jgbm', 'jgmc', 'sjrq'] + [f'field{i}' for i in range(1, 21)]
@@ -129,11 +126,22 @@ def import_excel():
                     insert_sql = f"INSERT INTO model_config ({','.join(all_fields)}) VALUES ({placeholders})"
                     cursor.execute(insert_sql, all_values)
 
-            # 生成批次号（不含扩展名）
+                # 2. 处理 model_type（如果不存在则插入默认记录）
+                cursor.execute("SELECT id FROM model_type WHERE model_name = ?", (model_name,))
+                random_id = int(time.time() * 1000) + random.randint(0, 9999)
+
+                if not cursor.fetchone():
+                    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    cursor.execute(
+                        "INSERT INTO model_type (id,model_name, type_code, type_des, create_time) VALUES (?,?, ?, ?, ?)",
+                        (random_id,model_name, 4, "合规与操作风险监测模型", current_time)
+                    )
+
+            # 生成批次号
             base_name = os.path.splitext(file.filename)[0]
             batch_no = f"{base_name}_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"
 
-            # 过滤合格数据行
+            # 过滤有效数据行
             valid_rows = []
             for row in data[1:]:
                 jgbm_val = get_val(row, 1)
@@ -172,10 +180,9 @@ def import_excel():
             success_count += 1
 
         except Exception as e:
-            conn.rollback()   # 回滚当前文件的修改
+            conn.rollback()
             errors.append(f'{file.filename}: {str(e)}')
         finally:
-            # 删除临时文件
             if os.path.exists(file_path):
                 os.remove(file_path)
 
@@ -188,10 +195,7 @@ def import_excel():
         msg = f'成功导入 {success_count} 个文件，共插入 {total_inserted} 条有效记录'
         if errors:
             msg += f'，部分文件失败: {"；".join(errors)}'
-        return Response(json.dumps({"code": 200, "msg": msg}, ensure_ascii=False),
-                        mimetype='application/json')
         return jsonify({"code": 200, "msg": msg}), 200
-
 
 # @app.route('/import', methods=['POST'])
 # def import_excel():
@@ -966,20 +970,30 @@ def export_excel():
 
 @app.route('/api/org-list')
 def org_list():
-    model_name = request.args.get('modelName')
-    if not model_name:
-        return Response(json.dumps({"error": "缺少 modelName 参数","code":400}, ensure_ascii=False),mimetype='application/json')
+    model_name = request.args.get('modelName')  # 可选参数
 
     try:
         conn = get_db()
         cursor = conn.cursor()
-        sql = """
-            SELECT DISTINCT jgmc, jgbm
-            FROM model_data
-            WHERE model_name = ? AND jgmc IS NOT NULL AND jgbm IS NOT NULL
-            ORDER BY jgmc
-        """
-        cursor.execute(sql, (model_name,))
+
+        # 动态构建 SQL
+        if model_name:
+            sql = """
+                SELECT DISTINCT jgmc, jgbm
+                FROM model_data
+                WHERE model_name = ? AND jgmc IS NOT NULL AND jgbm IS NOT NULL
+                ORDER BY jgmc
+            """
+            cursor.execute(sql, (model_name,))
+        else:
+            sql = """
+                SELECT DISTINCT jgmc, jgbm
+                FROM model_data
+                WHERE jgmc IS NOT NULL AND jgbm IS NOT NULL
+                ORDER BY jgmc
+            """
+            cursor.execute(sql)
+
         rows = cursor.fetchall()
         result = [{"jgmc": row["jgmc"], "jgbm": row["jgbm"]} for row in rows]
         cursor.close()
@@ -1399,37 +1413,90 @@ def update_model_config():
 @app.route('/api/batch-stats')
 def batch_stats():
     """
-    按批次号分组统计 model_data 中的记录数量
-    返回格式: [{"batch_no": "批次号", "count": 数量}, ...]
-    可选参数: limit - 限制返回的批次数量（默认返回全部）
-              order - 排序方式，可选 desc（倒序，默认）或 asc
+    按批次号分组统计 model_data 中的记录数量，支持自定义排序字段和方向，支持按模型名称和机构编码过滤
+    必传参数:
+        order_field (str): 排序字段，必须为 model_name, jgmc, count, create_time 之一
+        order_type (str): 排序方向，必须为 desc 或 asc
+    可选参数:
+        limit (int): 限制返回条数
+        model_name (str): 模型名称过滤（模糊匹配？精确匹配？按需求，建议精确匹配，这里做精确匹配）
+        jgbm (str): 机构编码过滤（精确匹配）
+    返回格式: [
+        {
+            "batch_no": "批次号",
+            "model_name": "模型名称",
+            "jgmc": "机构名称",
+            "create_time": "2025-05-13 10:30:00",
+            "count": 数量
+        }, ...
+    ]
     """
     try:
         conn = get_db()
         cursor = conn.cursor()
 
-        limit = request.args.get('limit', default=None, type=int)
-        order = request.args.get('order', default='desc', type=str)
+        # 必传 order_field 校验
+        order_field = request.args.get('order_field', type=str).lower()
+        allowed_fields = ['model_name', 'jgmc', 'count', 'create_time']
+        if not order_field or order_field not in allowed_fields:
+            return jsonify({"error": f"缺少必传参数 order_field 或值无效，允许值: {', '.join(allowed_fields)}"}), 400
 
-        sql = """
-            SELECT batch_no, COUNT(*) AS count
+        # 必传 order_type 校验
+        order_type = request.args.get('order_type', type=str).lower()
+        if not order_type or order_type not in ['desc', 'asc']:
+            return jsonify({"error": "缺少必传参数 order_type 或值无效，允许值: desc, asc"}), 400
+
+        limit = request.args.get('limit', default=None, type=int)
+        # 过滤参数
+        model_name_filter = request.args.get('model_name', type=str)
+        jgbm_filter = request.args.get('jgbm', type=str)
+
+        # 构建 WHERE 条件
+        where_clause = "batch_no IS NOT NULL AND batch_no != ''"
+        params = []
+        if model_name_filter:
+            where_clause += " AND model_name = ?"
+            params.append(model_name_filter)
+        if jgbm_filter:
+            where_clause += " AND jgbm = ?"
+            params.append(jgbm_filter)
+
+        sort_dir = 'DESC' if order_type == 'desc' else 'ASC'
+        field_map = {
+            'model_name': 'model_name',
+            'jgmc': 'jgmc',
+            'count': 'COUNT(*)',
+            'create_time': 'MAX(create_time)'
+        }
+        order_sql = field_map[order_field]
+
+        sql = f"""
+            SELECT batch_no, 
+                   model_name, 
+                   jgmc,
+                   MAX(create_time) AS create_time,
+                   COUNT(*) AS count
             FROM model_data
-            WHERE batch_no IS NOT NULL AND batch_no != ''
-            GROUP BY batch_no
+            WHERE {where_clause}
+            GROUP BY batch_no, model_name, jgmc
+            ORDER BY {order_sql} {sort_dir}
         """
-        if order.lower() == 'desc':
-            sql += " ORDER BY create_time DESC"
-        else:
-            sql += " ORDER BY create_time ASC"
         if limit is not None:
             sql += " LIMIT ?"
-            params = (limit,)
-        else:
-            params = ()
+            params.append(limit)
 
         cursor.execute(sql, params)
         rows = cursor.fetchall()
-        result = [{"batch_no": row["batch_no"], "count": row["count"]} for row in rows]
+        result = [
+            {
+                "batch_no": row["batch_no"],
+                "model_name": row["model_name"],
+                "jgmc": row["jgmc"],
+                "create_time": row["create_time"],
+                "count": row["count"]
+            }
+            for row in rows
+        ]
         cursor.close()
         conn.close()
         return Response(
@@ -1444,32 +1511,50 @@ def batch_stats():
 @app.route('/api/batch-delete', methods=['POST'])
 def batch_delete():
     """
-    根据批次号删除 model_data 中的记录
-    参数（JSON 或 query string）: batch_no
-    返回: {"message": "删除成功", "deleted_count": n}
+    根据批次号（支持逗号分隔多个）批量删除 model_data 中的记录
+    参数：batch_nos - 逗号分隔的批次号字符串，例如 "批次1,批次2,批次3"
+         （可从查询参数或 JSON 请求体中获取）
+    返回：{"message": "删除成功", "deleted_count": n, "failed": [...]}
     """
+    # 获取参数：优先从 JSON 获取，其次从查询参数获取
     data = request.get_json(silent=True)
-    if data:
-        batch_no = data.get('batch_no')
+    batch_nos_str = None
+    if data and 'batch_nos' in data:
+        batch_nos_str = data.get('batch_nos')
     else:
-        batch_no = request.args.get('batch_no')
+        batch_nos_str = request.args.get('batch_nos')
 
-    if not batch_no:
-        return jsonify({"error": "缺少 batch_no 参数"}), 400
+    if not batch_nos_str:
+        return jsonify({"error": "缺少 batch_nos 参数"}), 400
+
+    # 按逗号分割，去除空格和空字符串
+    batch_nos = [b.strip() for b in batch_nos_str.split(',') if b.strip()]
+    if not batch_nos:
+        return jsonify({"error": "batch_nos 参数无效，未提供有效的批次号"}), 400
 
     try:
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM model_data WHERE batch_no = ?", (batch_no,))
-        deleted = cursor.rowcount
+        total_deleted = 0
+        failed = []
+        for batch_no in batch_nos:
+            cursor.execute("DELETE FROM model_data WHERE batch_no = ?", (batch_no,))
+            deleted = cursor.rowcount
+            if deleted == 0:
+                failed.append({"batch_no": batch_no, "reason": "批次不存在或无数据"})
+            else:
+                total_deleted += deleted
         conn.commit()
         cursor.close()
         conn.close()
 
-        if deleted == 0:
-            return jsonify({"message": f"未找到批次 {batch_no} 的数据", "deleted_count": 0}), 200
+        if total_deleted == 0 and failed:
+            return jsonify({"message": "未删除任何记录", "deleted_count": 0, "failed": failed}), 200
         else:
-            return jsonify({"message": f"成功删除 {deleted} 条记录", "deleted_count": deleted}), 200
+            msg = f"成功删除 {total_deleted} 条记录"
+            if failed:
+                msg += f"，{len(failed)} 个批次未找到数据"
+            return jsonify({"message": msg, "deleted_count": total_deleted, "failed": failed}), 200
     except Exception as e:
         print("批次删除错误：", e)
         return jsonify({"error": str(e)}), 500
