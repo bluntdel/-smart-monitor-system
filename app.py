@@ -8,8 +8,9 @@ from datetime import date
 import io
 import openpyxl
 from openpyxl.styles import Font, Alignment
-from datetime import datetime
 from openpyxl.utils import get_column_letter
+from werkzeug.utils import secure_filename
+import hashlib
 
 load_dotenv()
 
@@ -74,44 +75,80 @@ def is_valid(value):
             return False
     return True
 
+
+def log_import_record(cursor, filename, file_hash, batch_no, status, error_msg=None, inserted_count=0):
+    """向 import_log 表插入一条记录"""
+    cursor.execute(
+        """INSERT INTO import_log (filename, file_hash, batch_no, status, error_msg, inserted_count)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (filename, file_hash, batch_no, status, error_msg, inserted_count)
+    )
+
 @app.route('/api/import', methods=['POST'])
 def import_excel():
     files = request.files.getlist('file')
     if not files:
-        return jsonify({"code": 400, "msg": "请至少选择一个 Excel 文件"}), 200
+        return jsonify({"code": 400, "msg": "请至少选择一个 Excel 文件", "msg1": ""}), 200
+
+    # 生成本次导入的唯一批次号（用于日志）
+    # import_batch_no = f"IMPORT_{datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(1000,9999)}"
 
     total_inserted = 0
     success_count = 0
-    errors = []
+    duplicate_count = 0
+    duplicate_files = []
+    errors = []  # 存储失败信息 ["文件名: 错误原因", ...]
 
     conn = get_db()
     cursor = conn.cursor()
 
     for file in files:
-        if not file.filename.endswith(('.xlsx', '.xls')):
-            errors.append(f'{file.filename}: 不支持的文件类型，仅支持 .xlsx 或 .xls')
+        filename = file.filename
+        if not (filename.endswith('.xlsx') or filename.endswith('.xls')):
+            err_msg = '不支持的文件类型，仅支持 .xlsx 或 .xls'
+            errors.append(f'{filename}: {err_msg}')
             continue
 
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
+        safe_name = secure_filename(filename)
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], safe_name)
+        batch_no=None
         try:
             file.save(file_path)
-            df = pd.read_excel(file_path, engine='openpyxl', header=None)
-            data = df.values.tolist()
+
+            # 读取 Excel
+            try:
+                df = pd.read_excel(file_path, engine='openpyxl', header=None, dtype=str)
+                data = df.values.tolist()
+            except Exception as e:
+                raise ValueError(f'读取 Excel 文件失败: {str(e)}')
 
             if len(data) < 2:
                 raise ValueError('文件至少需要两行数据（表头+数据行）')
 
+            # 计算数据内容哈希
+            df_filled = df.fillna('')
+            content_str = df_filled.to_csv(index=False, header=False).encode('utf-8')
+            data_hash = hashlib.md5(content_str).hexdigest()
+            print(f"文件 {filename} 的数据哈希值: {data_hash}")
+
+            # 检查哈希是否已存在（重复文件）
+            cursor.execute("SELECT 1 FROM model_data WHERE data_hash_code = ? LIMIT 1", (data_hash,))
+            if cursor.fetchone():
+                duplicate_count += 1
+                duplicate_files.append(filename)
+                continue
+
+            # 正常导入流程...
             first_row = data[0]
             model_name = get_val(data[1], 0)
 
-            # 表头提取
             jgbm_title = get_val(first_row, 1)
             jgmc_title = get_val(first_row, 2)
             sjrq_title = get_val(first_row, 3)
             field_titles = [get_val(first_row, i) for i in range(4, 24)]
 
             if model_name:
-                # 1. 处理 model_config（如果不存在则插入）
+                # model_config 处理
                 cursor.execute("SELECT id FROM model_config WHERE model_name = ?", (model_name,))
                 if not cursor.fetchone():
                     base_fields = ['model_name', 'jgbm', 'jgmc', 'sjrq'] + [f'field{i}' for i in range(1, 21)]
@@ -126,19 +163,18 @@ def import_excel():
                     insert_sql = f"INSERT INTO model_config ({','.join(all_fields)}) VALUES ({placeholders})"
                     cursor.execute(insert_sql, all_values)
 
-                # 2. 处理 model_type（如果不存在则插入默认记录）
+                # model_type 默认记录
                 cursor.execute("SELECT id FROM model_type WHERE model_name = ?", (model_name,))
-                random_id = int(time.time() * 1000) + random.randint(0, 9999)
-
                 if not cursor.fetchone():
+                    random_id = int(time.time() * 1000) + random.randint(0, 9999)
                     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     cursor.execute(
-                        "INSERT INTO model_type (id,model_name, type_code, type_des, create_time) VALUES (?,?, ?, ?, ?)",
-                        (random_id,model_name, 4, "合规与操作风险监测模型", current_time)
+                        "INSERT INTO model_type (id, model_name, type_code, type_des, create_time) VALUES (?, ?, ?, ?, ?)",
+                        (random_id, model_name, 4, "合规与操作风险监测模型", current_time)
                     )
 
             # 生成批次号
-            base_name = os.path.splitext(file.filename)[0]
+            base_name = os.path.splitext(filename)[0]
             batch_no = f"{base_name}_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"
 
             # 过滤有效数据行
@@ -154,48 +190,171 @@ def import_excel():
                 raise ValueError('没有符合条件的数据行（机构信息为空）')
 
             # 插入数据
+            inserted_this_file = 0
             for row in valid_rows:
                 cursor.execute('''
                     INSERT INTO model_data (
-                        model_name, jgbm, jgmc, sjrq, batch_no,
+                        model_name, jgbm, jgmc, sjrq, batch_no, data_hash_code,
                         field1, field2, field3, field4, field5,
                         field6, field7, field8, field9, field10,
                         field11, field12, field13, field14, field15,
                         field16, field17, field18, field19, field20
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     get_val(row, 0),
                     get_val(row, 1),
                     get_val(row, 2),
                     get_val(row, 3),
                     batch_no,
+                    data_hash,
                     get_val(row, 4), get_val(row, 5), get_val(row, 6), get_val(row, 7), get_val(row, 8),
                     get_val(row, 9), get_val(row, 10), get_val(row, 11), get_val(row, 12), get_val(row, 13),
                     get_val(row, 14), get_val(row, 15), get_val(row, 16), get_val(row, 17), get_val(row, 18),
                     get_val(row, 19), get_val(row, 20), get_val(row, 21), get_val(row, 22), get_val(row, 23)
                 ))
-                total_inserted += 1
+                inserted_this_file += 1
 
-            conn.commit()
+            total_inserted += inserted_this_file
             success_count += 1
+            conn.commit()
 
         except Exception as e:
             conn.rollback()
-            errors.append(f'{file.filename}: {str(e)}')
+            error_msg = str(e)
+            errors.append(f'{filename}: {error_msg}')
         finally:
             if os.path.exists(file_path):
-                os.remove(file_path)
+                try:
+                    os.remove(file_path)
+                except PermissionError:
+                    print(f"警告：无法删除临时文件 {file_path}")
+
+    # ========== 插入汇总日志（只存一条） ==========
+    total_files = len(files)
+    if total_files > 0:
+        # 构建汇总状态和错误信息
+        if success_count == total_files and duplicate_count == 0 and not errors:
+            overall_status = 'all_success'
+            error_msg_summary = f"全部成功：共导入 {success_count} 个文件，合计 {total_inserted} 条记录"
+        elif success_count > 0:
+            overall_status = 'partial_success'
+            parts = []
+            parts.append(f"成功导入 {success_count} 个文件，合计 {total_inserted} 条记录")
+            if duplicate_count > 0:
+                dup_names = "、".join(duplicate_files)
+                parts.append(f"重复文件 {duplicate_count} 个（内容已存在，已跳过）：{dup_names}")
+            if errors:
+                parts.append(f"失败: {'；'.join(errors)}")
+            error_msg_summary = "；".join(parts)
+        else:  # success_count == 0
+            overall_status = 'all_failed'
+            parts = []
+            if duplicate_count > 0:
+                dup_names = "、".join(duplicate_files)
+                parts.append(f"重复文件 {duplicate_count} 个（内容已存在，已跳过）：{dup_names}")
+            if errors:
+                parts.append(f"失败: {'；'.join(errors)}")
+            error_msg_summary = "；".join(parts) if parts else "所有文件均未成功导入（无具体错误）"
+
+        random_id = int(time.time() * 1000) + random.randint(0, 9999)
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+        # 插入一条汇总记录（file_name 和 inserted_count 不需要，用 None 和 0 占位）
+        cursor.execute(
+            """INSERT INTO import_log (id, batch_no, status, error_msg, create_time)
+               VALUES ( ?, ?, ?, ?, ?)""",
+            (random_id, batch_no, overall_status, error_msg_summary, current_time)
+        )
+        conn.commit()
 
     cursor.close()
     conn.close()
 
+    # 构建返回响应
     if success_count == 0:
-        return jsonify({"code": 500, "msg": f"导入失败: {'; '.join(errors)}"}), 200
-    else:
-        msg = f'成功导入 {success_count} 个文件，共插入 {total_inserted} 条有效记录'
+        code = 500
+        fail_parts = []
+        if duplicate_count > 0:
+            duplicate_names = "、".join(duplicate_files)
+            fail_parts.append(f"重复文件 {duplicate_count} 个（内容已存在，已跳过）：{duplicate_names}")
         if errors:
-            msg += f'，部分文件失败: {"；".join(errors)}'
-        return jsonify({"code": 200, "msg": msg}), 200
+            fail_parts.append(f"失败: {'；'.join(errors)}")
+        msg = "；".join(fail_parts) if fail_parts else "所有文件均未成功导入"
+        msg1 = ""
+    else:
+        code = 200
+        msg = f"成功导入 {success_count} 个文件，共插入 {total_inserted} 条记录"
+        other_parts = []
+        if duplicate_count > 0:
+            duplicate_names = "、".join(duplicate_files)
+            other_parts.append(f"重复文件 {duplicate_count} 个（内容已存在，已跳过）：{duplicate_names}")
+        if errors:
+            other_parts.append(f"失败: {'；'.join(errors)}")
+        msg1 = "；".join(other_parts) if other_parts else ""
+
+    return jsonify({
+        "code": code,
+        "msg": msg,
+        "msg1": msg1,
+        "duplicate_files": duplicate_files,
+        "duplicate_count": duplicate_count,
+        "success_count": success_count,
+        "total_inserted": total_inserted,
+        "errors": errors
+    }), 200
+
+
+# @app.route('/api/import-logs', methods=['GET'])
+# def get_import_logs():
+#     """分页查询导入记录，支持状态过滤"""
+#     page = request.args.get('page', 1, type=int)
+#     per_page = request.args.get('per_page', 20, type=int)
+#     status = request.args.get('status')  # success / failed / duplicate，可选
+#
+#     if page < 1:
+#         page = 1
+#     if per_page < 1:
+#         per_page = 20
+#     offset = (page - 1) * per_page
+#
+#     try:
+#         conn = get_db()
+#         cursor = conn.cursor()
+#         base_sql = "FROM import_log WHERE 1=1"
+#         params = []
+#         if status:
+#             base_sql += " AND status = ?"
+#             params.append(status)
+#
+#         # 总数
+#         count_sql = f"SELECT COUNT(*) AS total {base_sql}"
+#         cursor.execute(count_sql, params)
+#         total = cursor.fetchone()['total']
+#
+#         # 数据
+#         data_sql = f"""
+#             SELECT id, filename, file_hash, batch_no, status, error_msg, inserted_count, create_time
+#             {base_sql}
+#             ORDER BY create_time DESC
+#             LIMIT ? OFFSET ?
+#         """
+#         cursor.execute(data_sql, params + [per_page, offset])
+#         rows = cursor.fetchall()
+#         items = [dict(row) for row in rows]
+#
+#         cursor.close()
+#         conn.close()
+#         return jsonify({
+#             "total": total,
+#             "page": page,
+#             "per_page": per_page,
+#             "items": items
+#         })
+#     except Exception as e:
+#         print("查询导入日志错误：", e)
+#         return jsonify({"error": str(e)}), 500
+
 
 # @app.route('/import', methods=['POST'])
 # def import_excel():
