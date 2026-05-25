@@ -117,7 +117,7 @@ def import_excel():
 
             # 读取 Excel
             try:
-                df = pd.read_excel(file_path, engine='openpyxl', header=None, dtype=str)
+                df = pd.read_excel(file_path, header=None, dtype=str)
                 data = df.values.tolist()
             except Exception as e:
                 raise ValueError(f'读取 Excel 文件失败: {str(e)}')
