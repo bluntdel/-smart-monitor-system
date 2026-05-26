@@ -11,11 +11,19 @@ from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
 from werkzeug.utils import secure_filename
 import hashlib
+import jwt
+from functools import wraps
 
-load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key'
+
+# JWT 配置（可以使用现有的 SECRET_KEY）
+JWT_SECRET = app.secret_key
+JWT_ALGORITHM = 'HS256'
+JWT_EXP_DELTA_SECONDS = 7200  # 24小时
+load_dotenv()
+
 
 # 必须配置上传文件夹
 UPLOAD_FOLDER = 'uploads'
@@ -84,8 +92,36 @@ def log_import_record(cursor, filename, file_hash, batch_no, status, error_msg=N
         (filename, file_hash, batch_no, status, error_msg, inserted_count)
     )
 
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        # 从请求头中获取 Authorization: Bearer <token>
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+        if not token:
+            return Response(json.dumps({"error": "缺少 token", "code": 401}, ensure_ascii=False),
+                     mimetype='application/json')
+        try:
+            data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            current_user_id = data['user_id']
+            current_user_admin = data.get('admin_flg', 0)
+        except jwt.ExpiredSignatureError:
+            return Response(json.dumps({"error": "token 已过期", "code": 401}, ensure_ascii=False),
+                            mimetype='application/json')
+        except jwt.InvalidTokenError:
+            return Response(json.dumps({"error": "无效 token", "code": 401}, ensure_ascii=False),
+                            mimetype='application/json')
+        # 将用户信息注入到函数中
+        return f(current_user_id, current_user_admin, *args, **kwargs)
+    return decorated
+
+
+
 @app.route('/api/import', methods=['POST'])
-def import_excel():
+@token_required   # 需要登录
+def import_excel(current_user_id, current_user_admin):
     files = request.files.getlist('file')
     if not files:
         return jsonify({"code": 400, "msg": "请至少选择一个 Excel 文件", "msg1": ""}), 200
@@ -446,7 +482,8 @@ def import_excel():
 
 # ---------- 驾驶舱页面（仅 GET） ----------
 @app.route('/')
-def dashboard():
+@token_required   # 需要登录
+def dashboard(current_user_id, current_user_admin):
     """驾驶舱首页，展示统计图表"""
     conn = get_db()
     cursor = conn.cursor()
@@ -494,7 +531,8 @@ def dashboard():
 
 
 @app.route('/api/chart-data-all')
-def api_chart_data():
+@token_required   # 需要登录
+def api_chart_data(current_user_id, current_user_admin):
     start_date = request.args.get('startDate')
     end_date = request.args.get('endDate')
     if not start_date or not end_date:
@@ -554,7 +592,8 @@ def api_chart_data():
         return jsonify([])
 
 @app.route('/api/chart-org-data')
-def api_chart_org_data():
+@token_required   # 需要登录
+def api_chart_org_data(current_user_id, current_user_admin):
     type_code = request.args.get('typeCode')
     month = request.args.get('month')
     jgmc = request.args.get('jgmc')
@@ -590,7 +629,8 @@ def api_chart_org_data():
 
 
 @app.route('/api/chart-data-monthly-all')
-def chart_data_monthly_type():
+@token_required   # 需要登录
+def chart_data_monthly_type(current_user_id, current_user_admin):
     start_date = request.args.get('startDate')
     end_date = request.args.get('endDate')
     if not start_date or not end_date:
@@ -683,7 +723,8 @@ def chart_data_monthly_type():
 
 
 @app.route('/api/chart-data')
-def api_chart_data1():
+@token_required   # 需要登录
+def api_chart_data1(current_user_id, current_user_admin):
     type_code = request.args.get('typeCode')
     start_date = request.args.get('startDate')
     end_date = request.args.get('endDate')
@@ -731,7 +772,8 @@ def api_chart_data1():
 
 
 @app.route('/api/chart-data-detail1')
-def chart_data_detail1():
+@token_required   # 需要登录
+def chart_data_detail1(current_user_id, current_user_admin):
     model_name = request.args.get('modelName')
     start_date = request.args.get('startDate')
     end_date = request.args.get('endDate')
@@ -1021,7 +1063,8 @@ def chart_data_detail1():
 #     )
 
 @app.route('/api/export-excel')
-def export_excel():
+@token_required   # 需要登录
+def export_excel(current_user_id, current_user_admin):
     model_name = request.args.get('modelName')
     month = request.args.get('month')
     jgbm = request.args.get('jgbm')          # 可选
@@ -1128,7 +1171,8 @@ def export_excel():
 
 
 @app.route('/api/org-list')
-def org_list():
+@token_required   # 需要登录
+def org_list(current_user_id, current_user_admin):
     model_name = request.args.get('modelName')  # 可选参数
 
     try:
@@ -1167,7 +1211,8 @@ def org_list():
 
 
 @app.route('/api/model-list')
-def model_list():
+@token_required   # 需要登录
+def model_list(current_user_id, current_user_admin):
     """
     获取所有可用的模型名称列表（基于 model_data 表，关联 model_type 支持按 typeCode 过滤）
     可选参数：typeCode - 类型编码
@@ -1210,7 +1255,8 @@ def model_list():
 
 
 @app.route('/api/org-type-stats')
-def org_type_stats():
+@token_required   # 需要登录
+def org_type_stats(current_user_id, current_user_admin):
     # 必传参数：startDate, endDate
     start_date = request.args.get('startDate')
     end_date = request.args.get('endDate')
@@ -1271,7 +1317,8 @@ def org_type_stats():
 
 
 @app.route('/api/org-type-stats2')
-def org_type_stats2():
+@token_required   # 需要登录
+def org_type_stats2(current_user_id, current_user_admin):
     # 必传参数：startDate, endDate
     start_date = request.args.get('startDate')
     end_date = request.args.get('endDate')
@@ -1338,7 +1385,8 @@ import calendar
 
 
 @app.route('/api/chart-data-monthly')
-def chart_data_monthly():
+@token_required   # 需要登录
+def chart_data_monthly(current_user_id, current_user_admin):
     type_code = request.args.get('typeCode')
     start_date = request.args.get('startDate')
     end_date = request.args.get('endDate')
@@ -1438,7 +1486,8 @@ def chart_data_monthly():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/model-config')
-def get_model_config():
+@token_required   # 需要登录
+def get_model_config(current_user_id, current_user_admin):
     """
     根据模型名称获取 model_config 完整配置信息，并关联 model_type 获取类型代码
     返回格式：{"id": 记录ID, "type_code": 类型代码, "data": [{"字段名": 原值, "字段名_des": 描述, "字段名_disable": 禁用标志}, ...]}
@@ -1503,7 +1552,8 @@ import time
 import random
 
 @app.route('/api/model-config-upd', methods=['PUT', 'POST', 'GET'])
-def update_model_config():
+@token_required   # 需要登录
+def update_model_config(current_user_id, current_user_admin):
     data = request.get_json()
     if not data:
         return jsonify({"error": "请求体不能为空"}), 400
@@ -1570,7 +1620,8 @@ def update_model_config():
 
 
 @app.route('/api/batch-stats')
-def batch_stats():
+@token_required   # 需要登录
+def batch_stats(current_user_id, current_user_admin):
     """
     按批次号分组统计 model_data 中的记录数量，支持自定义排序字段和方向，支持按模型名称和机构编码过滤
     必传参数:
@@ -1668,7 +1719,8 @@ def batch_stats():
 
 
 @app.route('/api/batch-delete', methods=['POST'])
-def batch_delete():
+@token_required   # 需要登录
+def batch_delete(current_user_id, current_user_admin):
     """
     根据批次号（支持逗号分隔多个）批量删除 model_data 中的记录
     参数：batch_nos - 逗号分隔的批次号字符串，例如 "批次1,批次2,批次3"
@@ -1717,6 +1769,424 @@ def batch_delete():
     except Exception as e:
         print("批次删除错误：", e)
         return jsonify({"error": str(e)}), 500
+
+
+from werkzeug.security import check_password_hash
+
+
+@app.route('/api/login', methods=['POST'])
+@token_required   # 需要登录
+def login(current_user_id, current_user_admin):
+    data = request.get_json()
+    userid = data.get('userid')
+    password_hash = data.get('password')
+    if not userid or not password_hash:
+        return jsonify({"error": "userid和密码不能为空"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, userid, password, admin_flg, office_id FROM sms_user WHERE userid = ?", (userid,))
+    user = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if not user or user['password'] != password_hash:
+        return jsonify({"error": "用户名或密码错误"}), 401
+
+    # 生成 token
+    token_payload = {
+        'user_id': user['id'],
+        'username': user['username'],
+        'userid': user['userid'],
+        'admin_flg': user['admin_flg'],
+        'exp': datetime.utcnow() + timedelta(seconds=JWT_EXP_DELTA_SECONDS)
+    }
+    token = jwt.encode(token_payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+    return jsonify({
+        "token": token,
+        "user": {
+            "id": user['id'],
+            "username": user['username'],
+            "userid": user['userid'],
+            "admin_flg": user['admin_flg'],
+            "office_id": user['office_id']
+        }
+    }), 200
+
+
+@app.route('/api/user/list', methods=['GET'])
+@token_required
+def user_list(current_user_id, current_user_admin):
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 10, type=int)
+    keyword = request.args.get('keyword', '').strip()
+    offset = (page - 1) * per_page
+
+    conn = get_db()
+    cursor = conn.cursor()
+    base_sql = """
+        FROM sms_user u
+        LEFT JOIN sms_office o ON u.office_id = o.office_id
+        WHERE 1=1
+    """
+    params = []
+    if keyword:
+        base_sql += " AND (u.username LIKE ? OR u.userid LIKE ? OR o.office_name LIKE ?)"
+        like = f"%{keyword}%"
+        params.extend([like, like, like])
+
+    count_sql = f"SELECT COUNT(*) AS total {base_sql}"
+    cursor.execute(count_sql, params)
+    total = cursor.fetchone()['total']
+
+    data_sql = f"""
+        SELECT u.id, u.username, u.userid, u.admin_flg, u.create_time,
+               u.office_id, o.office_name
+        {base_sql}
+        ORDER BY u.id DESC
+        LIMIT ? OFFSET ?
+    """
+    cursor.execute(data_sql, params + [per_page, offset])
+    rows = cursor.fetchall()
+    items = [dict(row) for row in rows]
+    cursor.close()
+    conn.close()
+
+    return jsonify({
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "items": items
+    })
+
+# from werkzeug.security import generate_password_hash
+import hashlib
+
+
+@app.route('/api/user/reset-password/<int:user_id>', methods=['POST'])
+@token_required   # 需要登录
+def reset_password(current_user_id, current_user_admin,user_id):
+    default_password = "sms12345"
+    # new_hash = generate_password_hash(default_password)
+    new_hash=hashlib.md5('Jjcbrc@2026'.encode()).hexdigest()
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE sms_user SET password = ? WHERE id = ?", (new_hash, user_id))
+    if cursor.rowcount == 0:
+        return jsonify({"error": "用户不存在"}), 404
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return jsonify({"message": f"密码已重置!"}), 200
+
+@app.route('/api/user/add', methods=['POST'])
+@token_required   # 需要登录
+def add_user(current_user_id, current_user_admin):
+    data = request.get_json()
+    required = ['username', 'userid', 'office_id']
+    for field in required:
+        if field not in data:
+            return jsonify({"error": f"缺少字段: {field}"}), 400
+
+    username = data['username'].strip()
+    userid = data['userid'].strip()
+    office_id = data['office_id']
+    admin_flg = data.get('admin_flg', 0)
+
+    # 默认密码
+    # default_password = "sms12345"
+    # password_hash = generate_password_hash(default_password)
+    password_hash=hashlib.md5('Jjcbrc@2026'.encode()).hexdigest()
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO sms_user (username, userid, password, admin_flg, office_id) VALUES (?, ?, ?, ?, ?)",
+            (username, userid, password_hash, admin_flg, office_id)
+        )
+        conn.commit()
+        new_id = cursor.lastrowid
+        cursor.close()
+        conn.close()
+        return jsonify({"message": "用户添加成功", "user_id": new_id}), 201
+    except sqlite3.IntegrityError as e:
+        return jsonify({"error": "用户名或工号已存在"}), 400
+
+@app.route('/api/user/upd', methods=['POST'])
+@token_required   # 需要登录
+def update_user(current_user_id, current_user_admin):
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "请求体不能为空"}), 400
+
+    user_id = data.get('id')
+    if not user_id:
+        return jsonify({"error": "缺少用户id"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM sms_user WHERE id = ?", (user_id,))
+    if not cursor.fetchone():
+        return jsonify({"error": "用户不存在"}), 404
+
+    update_fields = []
+    params = []
+    if 'username' in data:
+        update_fields.append("username = ?")
+        params.append(data['username'].strip())
+    if 'userid' in data:
+        update_fields.append("userid = ?")
+        params.append(data['userid'].strip())
+    if 'office_id' in data:
+        update_fields.append("office_id = ?")
+        params.append(data['office_id'])
+    if 'admin_flg' in data:
+        update_fields.append("admin_flg = ?")
+        params.append(data['admin_flg'])
+    if 'password' in data and data['password']:
+        new_hash = generate_password_hash(data['password'])
+        update_fields.append("password = ?")
+        params.append(new_hash)
+
+    if not update_fields:
+        return jsonify({"message": "没有需要更新的字段"}), 200
+
+    params.append(user_id)
+    sql = f"UPDATE sms_user SET {', '.join(update_fields)} WHERE id = ?"
+    cursor.execute(sql, params)
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return jsonify({"message": "用户信息更新成功"}), 200
+
+@app.route('/api/user/del/<int:user_id>', methods=['POST'])
+@token_required   # 需要登录
+def delete_user(current_user_id, current_user_admin,user_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM sms_user WHERE id = ?", (user_id,))
+    if cursor.rowcount == 0:
+        return jsonify({"error": "用户不存在"}), 404
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return jsonify({"message": "用户已删除"}), 200
+
+
+@app.route('/api/office/list', methods=['GET'])
+@token_required   # 需要登录
+def office_list(current_user_id, current_user_admin):
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    keyword = request.args.get('keyword', '').strip()
+    offset = (page - 1) * per_page
+
+    conn = get_db()
+    cursor = conn.cursor()
+    base_sql = "FROM sms_office WHERE 1=1"
+    params = []
+    if keyword:
+        base_sql += " AND (office_code LIKE ? OR office_name LIKE ?)"
+        like = f"%{keyword}%"
+        params.extend([like, like])
+
+    count_sql = f"SELECT COUNT(*) AS total {base_sql}"
+    cursor.execute(count_sql, params)
+    total = cursor.fetchone()['total']
+
+    data_sql = f"""
+        SELECT office_id, office_code, office_name, create_time
+        {base_sql}
+        ORDER BY office_id DESC
+        LIMIT ? OFFSET ?
+    """
+    cursor.execute(data_sql, params + [per_page, offset])
+    rows = cursor.fetchall()
+    items = [dict(row) for row in rows]
+    cursor.close()
+    conn.close()
+    return jsonify({
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "items": items
+    })
+
+@app.route('/api/office/add', methods=['POST'])
+@token_required   # 需要登录
+def add_office(current_user_id, current_user_admin):
+    data = request.get_json()
+    office_code = data.get('office_code', '').strip()
+    office_name = data.get('office_name', '').strip()
+    if not office_code or not office_name:
+        return jsonify({"error": "机构编码和名称不能为空"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO sms_office (office_code, office_name) VALUES (?, ?)",
+            (office_code, office_name)
+        )
+        conn.commit()
+        new_id = cursor.lastrowid
+        cursor.close()
+        conn.close()
+        return jsonify({"message": "机构添加成功", "office_id": new_id}), 201
+    except sqlite3.IntegrityError as e:
+        return jsonify({"error": "机构编码或名称已存在"}), 400
+
+@app.route('/api/office/upd', methods=['POST'])
+@token_required
+def update_office(current_user_id, current_user_admin):
+    data = request.get_json()
+    office_id = data.get('office_id')
+    if not office_id:
+        return jsonify({"error": "缺少 office_id"}), 400
+
+    office_code = data.get('office_code', '').strip()
+    office_name = data.get('office_name', '').strip()
+    if not office_code or not office_name:
+        return jsonify({"error": "机构编码和名称不能为空"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT office_id FROM sms_office WHERE office_id = ?", (office_id,))
+    if not cursor.fetchone():
+        return jsonify({"error": "机构不存在"}), 404
+    try:
+        cursor.execute(
+            "UPDATE sms_office SET office_code = ?, office_name = ? WHERE office_id = ?",
+            (office_code, office_name, office_id)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({"message": "机构信息更新成功"}), 200
+    except sqlite3.IntegrityError as e:
+        return jsonify({"error": "机构编码或名称已存在"}), 400
+
+
+@app.route('/api/office/del/<int:office_id>', methods=['POST'])
+@token_required
+def delete_office(current_user_id, current_user_admin, office_id):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT office_id FROM sms_office WHERE office_id = ?", (office_id,))
+    if not cursor.fetchone():
+        return jsonify({"error": "机构不存在"}), 404
+
+    # 将该机构下的用户的 office_id 置为 NULL
+    cursor.execute("UPDATE sms_user SET office_id = NULL WHERE office_id = ?", (office_id,))
+    # 删除机构
+    cursor.execute("DELETE FROM sms_office WHERE office_id = ?", (office_id,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return jsonify({"message": "机构已删除，关联用户的机构信息已清空"}), 200
+
+
+@app.route('/api/model-office/list', methods=['GET'])
+@token_required
+def model_office_list(current_user_id, current_user_admin):
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 查询所有机构
+    cursor.execute("SELECT office_id, office_code, office_name FROM sms_office ORDER BY office_id")
+    offices = cursor.fetchall()
+
+    # 查询所有关联关系
+    cursor.execute("SELECT office_id, model_name FROM model_office ORDER BY office_id, model_name")
+    relations = cursor.fetchall()
+
+    # 构建 office_id -> models 列表的映射
+    models_map = {}
+    for row in relations:
+        office_id = row['office_id']
+        model_name = row['model_name']
+        if office_id not in models_map:
+            models_map[office_id] = []
+        models_map[office_id].append(model_name)
+
+    # 组装结果
+    result = []
+    for off in offices:
+        office_id = off['office_id']
+        result.append({
+            "office_id": office_id,
+            "office_code": off['office_code'],
+            "office_name": off['office_name'],
+            "model_names": models_map.get(office_id, [])
+        })
+
+    cursor.close()
+    conn.close()
+    return jsonify(result)
+
+@app.route('/api/model-office/new', methods=['POST'])
+@token_required
+def sync_model_office(current_user_id, current_user_admin):
+    data = request.get_json()
+    office_id = data.get('office_id')
+    model_names = data.get('model_names', [])
+    if not office_id:
+        return jsonify({"error": "缺少 office_id"}), 400
+    if not isinstance(model_names, list):
+        return jsonify({"error": "model_names 必须是数组"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    # 检查机构是否存在
+    cursor.execute("SELECT office_id FROM sms_office WHERE office_id = ?", (office_id,))
+    if not cursor.fetchone():
+        return jsonify({"error": "机构不存在"}), 404
+
+    # 删除旧关联
+    cursor.execute("DELETE FROM model_office WHERE office_id = ?", (office_id,))
+    inserted = 0
+    for mn in set(model_names):
+        if mn and mn.strip():
+            cursor.execute(
+                "INSERT INTO model_office (office_id, model_name) VALUES (?, ?)",
+                (office_id, mn.strip())
+            )
+            inserted += 1
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return jsonify({"message": f"成功更新关联，共关联 {inserted} 个模型"}), 200
+
+
+@app.route('/api/model/list', methods=['GET'])
+@token_required
+def get_model_list(current_user_id, current_user_admin):
+    """
+    根据模型类型查询模型名称列表
+    参数: typeCode (可选)
+    返回: [{"model_name": "模型名称"}, ...]
+    """
+    type_code = request.args.get('typeCode')
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        if type_code:
+            sql = "SELECT DISTINCT model_name FROM model_type WHERE type_code = ? ORDER BY model_name"
+            cursor.execute(sql, (type_code,))
+        else:
+            sql = "SELECT DISTINCT model_name FROM model_type ORDER BY model_name"
+            cursor.execute(sql)
+        rows = cursor.fetchall()
+        result = [{"model_name": row["model_name"]} for row in rows]
+        cursor.close()
+        conn.close()
+        return jsonify(result)
+    except Exception as e:
+        print("查询模型列表错误：", e)
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=25125, debug=True)

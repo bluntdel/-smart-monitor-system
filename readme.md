@@ -40,3 +40,5 @@ CREATE INDEX idx_jgbm ON model_data(jgbm);
 
 --若是要保证表中结构，参看model_data.sql文件，只是显示顺序对数据操作无影响。
 
+安装jwt
+pip install pyjwt
