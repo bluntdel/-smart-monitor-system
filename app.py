@@ -1712,7 +1712,7 @@ def reset_password(current_user_id, current_user_admin, user_id):
     conn.commit()
     cursor.close()
     conn.close()
-    return jsonify({"code": 401, "msg": f"密码已重置!"}), 200
+    return jsonify({"code": 200, "msg": f"密码已重置!"}), 200
 
 
 @app.route('/api/user/add', methods=['POST'])
