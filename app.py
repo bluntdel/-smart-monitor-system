@@ -173,7 +173,6 @@ def model_office_permission_required(f):
         if not cached_key or cached_key != session_key:
             return jsonify({"error": "token 已失效，请重新登录", "code": 403}), 200
 
-        # 以下为原有逻辑：获取 office_id 和 allowed_models
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("SELECT office_id FROM sms_user WHERE id = ?", (user_id,))
@@ -182,9 +181,11 @@ def model_office_permission_required(f):
             cursor.close()
             conn.close()
             return jsonify({"error": "用户不存在", "code": 401}), 200
+
         office_id = user_row['office_id']
-        allowed_models = None
-        if admin_flg:
+        # 超级管理员：admin_flg=1 且 office_id 为空（None或空串）
+        is_super_admin = (admin_flg == 1) and (not office_id)
+        if is_super_admin:
             allowed_models = None
         else:
             allowed_models = []
@@ -201,37 +202,54 @@ def model_office_permission_required(f):
     return decorated
 
 
+def is_super_admin(user_row):
+    """user_row 包含 admin_flg 和 office_id 字段"""
+    return user_row['admin_flg'] == 1 and not user_row['office_id']
+
 @app.route('/api/logout', methods=['GET'])
 @token_required
 def logout(current_user_id, current_user_admin):
     token_cache.delete(current_user_id)
     return jsonify({"code": 200, "msg": f"注销成功"}), 200
 
-
 @app.route('/api/import', methods=['POST'])
-@token_required  # 需要登录
+@token_required
 def import_excel(current_user_id, current_user_admin):
     files = request.files.getlist('file')
     if not files:
         return jsonify({"code": 400, "msg": "请至少选择一个 Excel 文件", "msg1": ""}), 200
 
-    # 生成本次导入的唯一批次号（用于日志）
-    # import_batch_no = f"IMPORT_{datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(1000,9999)}"
+    # 获取当前用户权限信息
+    conn_auth = get_db()
+    cursor_auth = conn_auth.cursor()
+    cursor_auth.execute("SELECT office_id, admin_flg FROM sms_user WHERE id = ?", (current_user_id,))
+    user_info = cursor_auth.fetchone()
+    if not user_info:
+        return jsonify({"code": 500, "msg": "用户信息不存在"}), 200
+    user_office_id = user_info['office_id']
+    user_admin_flg = user_info['admin_flg']
+    is_super_admin = (user_admin_flg == 1) and (not user_office_id)
+
+    allowed_models = None
+    if not is_super_admin:
+        allowed_models = []
+        if user_office_id:
+            cursor_auth.execute("SELECT model_name FROM model_office WHERE office_id = ?", (user_office_id,))
+            rows = cursor_auth.fetchall()
+            allowed_models = [row['model_name'] for row in rows]
+    cursor_auth.close()
+    conn_auth.close()
 
     total_inserted = 0
     success_count = 0
     duplicate_count = 0
     duplicate_files = []
-    errors = []  # 存储失败信息 ["文件名: 错误原因", ...]
-
-    conn = get_db()
-    cursor = conn.cursor()
+    errors = []
 
     for file in files:
         filename = file.filename
         if not (filename.endswith('.xlsx') or filename.endswith('.xls')):
-            err_msg = '不支持的文件类型，仅支持 .xlsx 或 .xls'
-            errors.append(f'{filename}: {err_msg}')
+            errors.append(f'{filename}: 不支持的文件类型')
             continue
 
         safe_name = secure_filename(filename)
@@ -239,33 +257,35 @@ def import_excel(current_user_id, current_user_admin):
         batch_no = None
         try:
             file.save(file_path)
-
-            # 读取 Excel
-            try:
-                df = pd.read_excel(file_path, header=None, dtype=str)
-                data = df.values.tolist()
-            except Exception as e:
-                raise ValueError(f'读取 Excel 文件失败: {str(e)}')
-
+            df = pd.read_excel(file_path, header=None, dtype=str)
+            data = df.values.tolist()
             if len(data) < 2:
                 raise ValueError('文件至少需要两行数据（表头+数据行）')
 
-            # 计算数据内容哈希
+            # 计算文件数据哈希
             df_filled = df.fillna('')
             content_str = df_filled.to_csv(index=False, header=False).encode('utf-8')
             data_hash = hashlib.md5(content_str).hexdigest()
             print(f"文件 {filename} 的数据哈希值: {data_hash}")
 
-            # 检查哈希是否已存在（重复文件）
+            first_row = data[0]
+            model_name = get_val(data[1], 0)
+
+            # 1. 先校验权限
+            if not is_super_admin and allowed_models is not None:
+                if model_name not in allowed_models:
+                    raise PermissionError(f'没有权限导入模型 {model_name}')
+
+            # 2. 再检查重复
+            conn = get_db()
+            cursor = conn.cursor()
             cursor.execute("SELECT 1 FROM model_data WHERE data_hash_code = ? LIMIT 1", (data_hash,))
             if cursor.fetchone():
                 duplicate_count += 1
                 duplicate_files.append(filename)
+                cursor.close()
+                conn.close()
                 continue
-
-            # 正常导入流程...
-            first_row = data[0]
-            model_name = get_val(data[1], 0)
 
             jgbm_title = get_val(first_row, 1)
             jgmc_title = get_val(first_row, 2)
@@ -273,7 +293,7 @@ def import_excel(current_user_id, current_user_admin):
             field_titles = [get_val(first_row, i) for i in range(4, 24)]
 
             if model_name:
-                # model_config 处理
+                # 处理 model_config
                 cursor.execute("SELECT id FROM model_config WHERE model_name = ?", (model_name,))
                 if not cursor.fetchone():
                     base_fields = ['model_name', 'jgbm', 'jgmc', 'sjrq'] + [f'field{i}' for i in range(1, 21)]
@@ -288,7 +308,7 @@ def import_excel(current_user_id, current_user_admin):
                     insert_sql = f"INSERT INTO model_config ({','.join(all_fields)}) VALUES ({placeholders})"
                     cursor.execute(insert_sql, all_values)
 
-                # model_type 默认记录
+                # 处理 model_type（默认类型4）
                 cursor.execute("SELECT id FROM model_type WHERE model_name = ?", (model_name,))
                 if not cursor.fetchone():
                     random_id = int(time.time() * 1000) + random.randint(0, 9999)
@@ -298,7 +318,6 @@ def import_excel(current_user_id, current_user_admin):
                         (random_id, model_name, 4, "合规与操作风险监测模型", current_time)
                     )
 
-            # 生成批次号
             base_name = os.path.splitext(filename)[0]
             batch_no = f"{base_name}_{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"
 
@@ -314,7 +333,6 @@ def import_excel(current_user_id, current_user_admin):
             if not valid_rows:
                 raise ValueError('没有符合条件的数据行（机构信息为空）')
 
-            # 插入数据
             inserted_this_file = 0
             for row in valid_rows:
                 cursor.execute('''
@@ -342,11 +360,17 @@ def import_excel(current_user_id, current_user_admin):
             total_inserted += inserted_this_file
             success_count += 1
             conn.commit()
+            cursor.close()
+            conn.close()
 
+        except PermissionError as e:
+            errors.append(f'{filename}: {str(e)}')
+            if os.path.exists(file_path):
+                os.remove(file_path)
         except Exception as e:
-            conn.rollback()
-            error_msg = str(e)
-            errors.append(f'{filename}: {error_msg}')
+            errors.append(f'{filename}: {str(e)}')
+            if os.path.exists(file_path):
+                os.remove(file_path)
         finally:
             if os.path.exists(file_path):
                 try:
@@ -354,80 +378,93 @@ def import_excel(current_user_id, current_user_admin):
                 except PermissionError:
                     print(f"警告：无法删除临时文件 {file_path}")
 
-    # ========== 插入汇总日志（只存一条） ==========
-    total_files = len(files)
-    if total_files > 0:
-        # 构建汇总状态和错误信息
-        if success_count == total_files and duplicate_count == 0 and not errors:
+    # 汇总日志
+    if len(files) > 0:
+        if success_count == len(files) and duplicate_count == 0 and not errors:
             overall_status = 'all_success'
             error_msg_summary = f"全部成功：共导入 {success_count} 个文件，合计 {total_inserted} 条记录"
         elif success_count > 0:
             overall_status = 'partial_success'
-            parts = []
-            parts.append(f"成功导入 {success_count} 个文件，合计 {total_inserted} 条记录")
+            parts = [f"成功导入 {success_count} 个文件，合计 {total_inserted} 条记录"]
             if duplicate_count > 0:
-                dup_names = "、".join(duplicate_files)
-                parts.append(f"重复文件 {duplicate_count} 个（内容已存在，已跳过）：{dup_names}")
+                parts.append(f"重复文件 {duplicate_count} 个（内容已存在，已跳过）：{'、'.join(duplicate_files)}")
             if errors:
                 parts.append(f"失败: {'；'.join(errors)}")
             error_msg_summary = "；".join(parts)
-        else:  # success_count == 0
+        else:
             overall_status = 'all_failed'
             parts = []
             if duplicate_count > 0:
-                dup_names = "、".join(duplicate_files)
-                parts.append(f"重复文件 {duplicate_count} 个（内容已存在，已跳过）：{dup_names}")
+                parts.append(f"重复文件 {duplicate_count} 个（内容已存在，已跳过）：{'、'.join(duplicate_files)}")
             if errors:
                 parts.append(f"失败: {'；'.join(errors)}")
-            error_msg_summary = "；".join(parts) if parts else "所有文件均未成功导入（无具体错误）"
+            error_msg_summary = "；".join(parts) if parts else "所有文件均未成功导入"
 
+        conn_log = get_db()
+        cursor_log = conn_log.cursor()
         random_id = int(time.time() * 1000) + random.randint(0, 9999)
         current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-        # 插入一条汇总记录（file_name 和 inserted_count 不需要，用 None 和 0 占位）
-        cursor.execute(
-            """INSERT INTO import_log (id, batch_no, status, error_msg, create_time)
-               VALUES ( ?, ?, ?, ?, ?)""",
+        cursor_log.execute(
+            "INSERT INTO import_log (id, batch_no, status, error_msg, create_time) VALUES (?, ?, ?, ?, ?)",
             (random_id, batch_no, overall_status, error_msg_summary, current_time)
         )
-        conn.commit()
+        conn_log.commit()
+        cursor_log.close()
+        conn_log.close()
 
-    cursor.close()
-    conn.close()
+    # 构建返回响应（换行分隔权限错误和重复错误）
+    permission_errors = []  # 权限错误（包含“没有权限”的）
+    other_errors = []  # 其他非权限错误
+    for err in errors:
+        if '没有权限' in err:
+            permission_errors.append(err)
+        else:
+            other_errors.append(err)
 
-    # 构建返回响应
-    if success_count == 0:
-        code = 500
-        fail_parts = []
-        if duplicate_count > 0:
-            duplicate_names = "、".join(duplicate_files)
-            fail_parts.append(f"重复文件 {duplicate_count} 个（内容已存在，已跳过）：{duplicate_names}")
-        if errors:
-            fail_parts.append(f"失败: {'；'.join(errors)}")
-        msg = "；".join(fail_parts) if fail_parts else "所有文件均未成功导入"
-        msg1 = ""
-    else:
+    if success_count == len(files) and duplicate_count == 0 and not errors:
+        # 全部成功
         code = 200
         msg = f"成功导入 {success_count} 个文件，共插入 {total_inserted} 条记录"
-        other_parts = []
+        msg1 = ""
+        msg2 = ""
+    else:
+        # 有失败或重复
+        code = 200  # 部分成功或全部失败都返回200？按之前逻辑部分成功200，全部失败500。但用户未明确，暂沿用原逻辑：有成功则200，全失败500
+        if success_count > 0:
+            code = 200
+            msg = f"成功导入 {success_count} 个文件，共插入 {total_inserted} 条记录"
+        else:
+            code = 200
+            msg = ""
+        # 重复文件信息放入 msg1
         if duplicate_count > 0:
-            duplicate_names = "、".join(duplicate_files)
-            other_parts.append(f"重复文件 {duplicate_count} 个（内容已存在，已跳过）：{duplicate_names}")
-        if errors:
-            other_parts.append(f"失败: {'；'.join(errors)}")
-        msg1 = "；".join(other_parts) if other_parts else ""
+            msg1 = f"重复文件 {duplicate_count} 个（内容已存在，已跳过）：{'、'.join(duplicate_files)}"
+        else:
+            msg1 = ""
+        # 权限错误放入 msg2（多条换行分隔）
+        if permission_errors:
+            msg2 = "\n".join(permission_errors)
+        else:
+            msg2 = ""
+        # 其他错误（非权限错误）附加到 msg1 或 msg2？用户未明确，暂将非权限错误放入 msg2 或另起字段。为清晰，可将所有非权限错误也放入 msg2，但用户要求“没有权限返回在msg2中”，即只返回权限错误。但其他错误（如文件格式错误）也需要提示。建议将其他错误也放入 msg2 中，与权限错误一起显示。
+        # 根据用户描述“只要全部成功才返回msg中，重复返回再msg1，没有权限返回在msg2中”，似乎其他错误未提及。为完整，我们将非权限错误也放入 msg2，但可以标注。
+        if other_errors:
+            if msg2:
+                msg2 += "\n" + "\n".join(other_errors)
+            else:
+                msg2 = "\n".join(other_errors)
 
     return jsonify({
         "code": code,
         "msg": msg,
         "msg1": msg1,
+        "msg2": msg2,
         "duplicate_files": duplicate_files,
         "duplicate_count": duplicate_count,
         "success_count": success_count,
         "total_inserted": total_inserted,
-        "errors": errors
+        "errors": errors  # 保留原始错误列表供调试
     }), 200
-
 
 # @app.route('/api/import-logs', methods=['GET'])
 # def get_import_logs():
@@ -1009,46 +1046,49 @@ def org_list(allowed_models, **kwargs):
 @model_office_permission_required
 def model_list(allowed_models, **kwargs):
     type_code = request.args.get('typeCode')
-    if allowed_models is None:
-        # 管理员：所有模型
-        sql = """
-            SELECT DISTINCT md.model_name
-            FROM model_data md
-            LEFT JOIN model_type mt ON md.model_name = mt.model_name
-            WHERE md.model_name IS NOT NULL AND md.model_name != ''
-        """
-        params = []
-        if type_code:
-            sql += " AND mt.type_code = ?"
-            params.append(type_code)
-        sql += " ORDER BY md.create_time"
-    elif allowed_models:
-        # 非管理员，仅允许列表中的模型
-        placeholders = ','.join(['?'] * len(allowed_models))
-        sql = f"""
-            SELECT DISTINCT md.model_name
-            FROM model_data md
-            LEFT JOIN model_type mt ON md.model_name = mt.model_name
-            WHERE md.model_name IN ({placeholders}) AND md.model_name IS NOT NULL AND md.model_name != ''
-        """
-        params = allowed_models.copy()
-        if type_code:
-            sql += " AND mt.type_code = ?"
-            params.append(type_code)
-        sql += " ORDER BY md.create_time"
-    else:
-        return jsonify([])
-
     try:
         conn = get_db()
         cursor = conn.cursor()
+
+        if allowed_models is None:
+            # 超级管理员：所有模型
+            sql = """
+                SELECT DISTINCT mc.model_name
+                FROM model_config mc
+                LEFT JOIN model_type mt ON mc.model_name = mt.model_name
+                WHERE mc.model_name IS NOT NULL AND mc.model_name != ''
+            """
+            params = []
+            if type_code:
+                sql += " AND mt.type_code = ?"
+                params.append(type_code)
+            sql += " ORDER BY mc.model_name"
+        elif allowed_models:
+            # 非管理员：仅允许列表中的模型
+            placeholders = ','.join(['?'] * len(allowed_models))
+            sql = f"""
+                SELECT DISTINCT mc.model_name
+                FROM model_config mc
+                LEFT JOIN model_type mt ON mc.model_name = mt.model_name
+                WHERE mc.model_name IN ({placeholders}) AND mc.model_name IS NOT NULL AND mc.model_name != ''
+            """
+            params = allowed_models.copy()
+            if type_code:
+                sql += " AND mt.type_code = ?"
+                params.append(type_code)
+            sql += " ORDER BY mc.model_name"
+        else:
+            return jsonify([])
+
         cursor.execute(sql, params)
         rows = cursor.fetchall()
         result = [{"model_name": row["model_name"]} for row in rows]
+        cursor.close()
+        conn.close()
         return jsonify(result)
     except Exception as e:
-        return jsonify({"code": 400, "msg": str(e)}), 500
-
+        print("查询模型列表错误：", e)
+        return jsonify({"code": 500, "msg": str(e)}), 500
 
 @app.route('/api/model-listAll')
 @model_office_permission_required
@@ -1402,51 +1442,64 @@ def update_model_config(current_user_id, current_user_admin):
 
 
 @app.route('/api/batch-stats')
-@token_required  # 需要登录
+@token_required
 def batch_stats(current_user_id, current_user_admin):
-    """
-    按批次号分组统计 model_data 中的记录数量，支持自定义排序字段和方向，支持按模型名称和机构编码过滤
-    必传参数:
-        order_field (str): 排序字段，必须为 model_name, jgmc, count, create_time 之一
-        order_type (str): 排序方向，必须为 desc 或 asc
-    可选参数:
-        limit (int): 限制返回条数
-        model_name (str): 模型名称过滤（模糊匹配？精确匹配？按需求，建议精确匹配，这里做精确匹配）
-        jgbm (str): 机构编码过滤（精确匹配）
-    返回格式: [
-        {
-            "batch_no": "批次号",
-            "model_name": "模型名称",
-            "jgmc": "机构名称",
-            "create_time": "2025-05-13 10:30:00",
-            "count": 数量
-        }, ...
-    ]
-    """
+    # 获取当前用户的 office_id 和 admin_flg
+    conn_auth = get_db()
+    cursor_auth = conn_auth.cursor()
+    cursor_auth.execute("SELECT office_id, admin_flg FROM sms_user WHERE id = ?", (current_user_id,))
+    user = cursor_auth.fetchone()
+    cursor_auth.close()
+    conn_auth.close()
+    if not user:
+        return jsonify({"code": 500, "msg": "用户信息不存在"}), 200
+
+    is_super_admin = (user['admin_flg'] == 1) and (not user['office_id'])
+    allowed_models = None
+    if not is_super_admin:
+        allowed_models = []
+        if user['office_id']:
+            conn_model = get_db()
+            cursor_model = conn_model.cursor()
+            cursor_model.execute("SELECT model_name FROM model_office WHERE office_id = ?", (user['office_id'],))
+            rows = cursor_model.fetchall()
+            allowed_models = [row['model_name'] for row in rows]
+            cursor_model.close()
+            conn_model.close()
+        # 如果 allowed_models 为空且不是超级管理员，则用户没有权限查看任何模型，直接返回空数组
+        if not allowed_models:
+            return jsonify([])
+
     try:
         conn = get_db()
         cursor = conn.cursor()
 
-        # 必传 order_field 校验
         order_field = request.args.get('order_field', type=str).lower()
         allowed_fields = ['model_name', 'jgmc', 'count', 'create_time']
         if not order_field or order_field not in allowed_fields:
             return jsonify({"code": 400, "msg": f"缺少必传参数 order_field 或值无效，允许值: {', '.join(allowed_fields)}"}), 200
 
-        # 必传 order_type 校验
         order_type = request.args.get('order_type', type=str).lower()
         if not order_type or order_type not in ['desc', 'asc']:
             return jsonify({"code": 400, "msg": "缺少必传参数 order_type 或值无效，允许值: desc, asc"}), 200
 
         limit = request.args.get('limit', default=None, type=int)
-        # 过滤参数
         model_name_filter = request.args.get('model_name', type=str)
         jgbm_filter = request.args.get('jgbm', type=str)
 
-        # 构建 WHERE 条件
+        # 构建 WHERE 子句
         where_clause = "batch_no IS NOT NULL AND batch_no != ''"
         params = []
+
+        # 模型权限过滤
+        if not is_super_admin and allowed_models:
+            placeholders = ','.join(['?'] * len(allowed_models))
+            where_clause += f" AND model_name IN ({placeholders})"
+            params.extend(allowed_models)
+
         if model_name_filter:
+            # 如果用户有权限过滤，且传入的 model_name 不在允许列表中，可以提前返回空（可选）
+            # 这里仍然添加条件，最终结果可能为空
             where_clause += " AND model_name = ?"
             params.append(model_name_filter)
         if jgbm_filter:
@@ -1497,8 +1550,7 @@ def batch_stats(current_user_id, current_user_admin):
         )
     except Exception as e:
         print("批次统计查询错误：", e)
-        return jsonify({"code": 400, "msg": str(e)}), 500
-
+        return jsonify({"code": 500, "msg": str(e)}), 500
 
 @app.route('/api/batch-delete', methods=['POST'])
 @token_required  # 需要登录
@@ -1647,9 +1699,21 @@ def login():
         }
     }), 200
 
+
 @app.route('/api/user/list', methods=['GET'])
 @token_required
 def user_list(current_user_id, current_user_admin):
+    # 获取当前用户信息
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT admin_flg, office_id FROM sms_user WHERE id = ?", (current_user_id,))
+    current_user = cursor.fetchone()
+    if not current_user:
+        return jsonify({"error": "用户不存在"}), 404
+    cursor.close()
+    conn.close()
+
+    is_super = current_user['admin_flg'] == 1 and not current_user['office_id']
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 10, type=int)
     keyword = request.args.get('keyword', '').strip()
@@ -1663,6 +1727,15 @@ def user_list(current_user_id, current_user_admin):
         WHERE 1=1
     """
     params = []
+
+    # 非超级管理员时，只能查看同部门用户
+    if not is_super:
+        if not current_user['office_id']:
+            # 无部门且非超级管理员，无权查看任何用户（或返回空）
+            return jsonify({"total": 0, "page": page, "per_page": per_page, "items": []})
+        base_sql += " AND u.office_id = ?"
+        params.append(current_user['office_id'])
+
     if keyword:
         base_sql += " AND (u.username LIKE ? OR u.userid LIKE ? OR o.office_name LIKE ?)"
         like = f"%{keyword}%"
@@ -1691,8 +1764,6 @@ def user_list(current_user_id, current_user_admin):
         "per_page": per_page,
         "items": items
     })
-
-
 # from werkzeug.security import generate_password_hash
 import hashlib
 
@@ -1969,39 +2040,57 @@ def delete_office(current_user_id, current_user_admin, office_id):
     return jsonify({"code": 200, "msg": f"机构已删除，关联用户的机构信息已清空"}), 200
 
 
+
 @app.route('/api/model-office/list', methods=['GET'])
 @token_required
 def model_office_list(current_user_id, current_user_admin):
     conn = get_db()
     cursor = conn.cursor()
 
-    # 查询所有机构
-    cursor.execute("SELECT office_id, office_code, office_name FROM sms_office ORDER BY office_id")
-    offices = cursor.fetchall()
+    cursor.execute("SELECT admin_flg, office_id FROM sms_user WHERE id = ?", (current_user_id,))
+    user_row = cursor.fetchone()
+    if not user_row:
+        return jsonify({"error": "用户不存在"}), 404
 
-    # 查询所有关联关系
-    cursor.execute("SELECT office_id, model_name FROM model_office ORDER BY office_id, model_name")
-    relations = cursor.fetchall()
+    is_super = user_row['admin_flg'] == 1 and not user_row['office_id']
+    user_office_id = user_row['office_id']
 
-    # 构建 office_id -> models 列表的映射
-    models_map = {}
-    for row in relations:
-        office_id = row['office_id']
-        model_name = row['model_name']
-        if office_id not in models_map:
-            models_map[office_id] = []
-        models_map[office_id].append(model_name)
-
-    # 组装结果
-    result = []
-    for off in offices:
-        office_id = off['office_id']
-        result.append({
-            "office_id": office_id,
-            "office_code": off['office_code'],
-            "office_name": off['office_name'],
-            "model_names": models_map.get(office_id, [])
-        })
+    if is_super:
+        # 超级管理员：所有机构
+        cursor.execute("SELECT office_id, office_code, office_name FROM sms_office ORDER BY office_id")
+        offices = cursor.fetchall()
+        cursor.execute("SELECT office_id, model_name FROM model_office ORDER BY office_id, model_name")
+        relations = cursor.fetchall()
+        models_map = {}
+        for row in relations:
+            models_map.setdefault(row['office_id'], []).append(row['model_name'])
+        result = []
+        for off in offices:
+            result.append({
+                "office_id": off['office_id'],
+                "office_code": off['office_code'],
+                "office_name": off['office_name'],
+                "model_names": models_map.get(off['office_id'], [])
+            })
+    else:
+        # 非超级管理员：只能查看自己的机构（如果 office_id 为空，返回空）
+        if not user_office_id:
+            result = []
+        else:
+            cursor.execute("SELECT office_id, office_code, office_name FROM sms_office WHERE office_id = ?", (user_office_id,))
+            office = cursor.fetchone()
+            if office:
+                cursor.execute("SELECT model_name FROM model_office WHERE office_id = ? ORDER BY model_name", (user_office_id,))
+                rows = cursor.fetchall()
+                model_names = [row['model_name'] for row in rows]
+                result = [{
+                    "office_id": office['office_id'],
+                    "office_code": office['office_code'],
+                    "office_name": office['office_name'],
+                    "model_names": model_names
+                }]
+            else:
+                result = []
 
     cursor.close()
     conn.close()
