@@ -1548,7 +1548,7 @@ def batch_delete(current_user_id, current_user_admin):
             msg = f"成功删除 {total_deleted} 条记录"
             if failed:
                 msg += f"，{len(failed)} 个批次未找到数据"
-            return jsonify({"code": 400, "msg": "未删除任何记录", "deleted_count": total_deleted, "failed": failed}), 200
+            return jsonify({"code": 200, "msg": "删除成功", "deleted_count": total_deleted, "failed": failed}), 200
 
     except Exception as e:
         print("批次删除错误：", e)
