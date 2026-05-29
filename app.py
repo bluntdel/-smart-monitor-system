@@ -96,6 +96,13 @@ def log_import_record(cursor, filename, file_hash, batch_no, status, error_msg=N
     )
 
 
+def api_response(code=200, msg="", data=None):
+    return jsonify({
+        "code": code,
+        "msg": msg,
+        "data": data if data is not None else []
+    })
+
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -425,8 +432,8 @@ def import_excel(current_user_id, current_user_admin):
         # 全部成功
         code = 200
         msg = f"成功导入 {success_count} 个文件，共插入 {total_inserted} 条记录"
-        msg1 = ""
         msg2 = ""
+        msg1 = ""
     else:
         # 有失败或重复
         code = 200  # 部分成功或全部失败都返回200？按之前逻辑部分成功200，全部失败500。但用户未明确，暂沿用原逻辑：有成功则200，全失败500
@@ -436,85 +443,31 @@ def import_excel(current_user_id, current_user_admin):
         else:
             code = 200
             msg = ""
-        # 重复文件信息放入 msg1
         if duplicate_count > 0:
-            msg1 = f"重复文件 {duplicate_count} 个（内容已存在，已跳过）：{'、'.join(duplicate_files)}"
-        else:
-            msg1 = ""
-        # 权限错误放入 msg2（多条换行分隔）
-        if permission_errors:
-            msg2 = "\n".join(permission_errors)
+            msg2 = f"重复文件 {duplicate_count} 个（内容已存在，已跳过）：{'、'.join(duplicate_files)}"
         else:
             msg2 = ""
-        # 其他错误（非权限错误）附加到 msg1 或 msg2？用户未明确，暂将非权限错误放入 msg2 或另起字段。为清晰，可将所有非权限错误也放入 msg2，但用户要求“没有权限返回在msg2中”，即只返回权限错误。但其他错误（如文件格式错误）也需要提示。建议将其他错误也放入 msg2 中，与权限错误一起显示。
-        # 根据用户描述“只要全部成功才返回msg中，重复返回再msg1，没有权限返回在msg2中”，似乎其他错误未提及。为完整，我们将非权限错误也放入 msg2，但可以标注。
+        if permission_errors:
+            msg1 = "\n".join(permission_errors)
+        else:
+            msg1 = ""
         if other_errors:
-            if msg2:
-                msg2 += "\n" + "\n".join(other_errors)
+            if msg1:
+                msg1 += "\n" + "\n".join(other_errors)
             else:
-                msg2 = "\n".join(other_errors)
+                msg1 = "\n".join(other_errors)
 
     return jsonify({
         "code": code,
         "msg": msg,
-        "msg1": msg1,
         "msg2": msg2,
+        "msg1": msg1,
         "duplicate_files": duplicate_files,
         "duplicate_count": duplicate_count,
         "success_count": success_count,
         "total_inserted": total_inserted,
         "errors": errors  # 保留原始错误列表供调试
     }), 200
-
-# @app.route('/api/import-logs', methods=['GET'])
-# def get_import_logs():
-#     """分页查询导入记录，支持状态过滤"""
-#     page = request.args.get('page', 1, type=int)
-#     per_page = request.args.get('per_page', 20, type=int)
-#     status = request.args.get('status')  # success / failed / duplicate，可选
-#
-#     if page < 1:
-#         page = 1
-#     if per_page < 1:
-#         per_page = 20
-#     offset = (page - 1) * per_page
-#
-#     try:
-#         conn = get_db()
-#         cursor = conn.cursor()
-#         base_sql = "FROM import_log WHERE 1=1"
-#         params = []
-#         if status:
-#             base_sql += " AND status = ?"
-#             params.append(status)
-#
-#         # 总数
-#         count_sql = f"SELECT COUNT(*) AS total {base_sql}"
-#         cursor.execute(count_sql, params)
-#         total = cursor.fetchone()['total']
-#
-#         # 数据
-#         data_sql = f"""
-#             SELECT id, filename, file_hash, batch_no, status, error_msg, inserted_count, create_time
-#             {base_sql}
-#             ORDER BY create_time DESC
-#             LIMIT ? OFFSET ?
-#         """
-#         cursor.execute(data_sql, params + [per_page, offset])
-#         rows = cursor.fetchall()
-#         items = [dict(row) for row in rows]
-#
-#         cursor.close()
-#         conn.close()
-#         return jsonify({
-#             "total": total,
-#             "page": page,
-#             "per_page": per_page,
-#             "items": items
-#         })
-#     except Exception as e:
-#         print("查询导入日志错误：", e)
-#         return jsonify({"error": str(e)}), 500
 
 
 # ---------- 驾驶舱页面（仅 GET） ----------
@@ -586,7 +539,7 @@ def api_chart_data(allowed_models, **kwargs):
         model_where = f"AND md.model_name IN ({placeholders})"
         model_params = allowed_models
     else:
-        return jsonify([])  # 无权限返回空
+        return api_response(data=[])  # 无权限返回空
 
     try:
         conn = get_db()
@@ -613,11 +566,11 @@ def api_chart_data(allowed_models, **kwargs):
         all_types = [1, 2, 3, 4, 5]
         result = [{"type_code": tc, "typeDes": type_desc_map.get(tc, f"类型{tc}"), "count": stats_map.get(tc, 0)} for tc
                   in all_types]
-        return jsonify(result)
+        return api_response(data=result)
     except Exception as e:
         print(e)
 
-        return jsonify([])
+        return api_response(data=[])  # 无权限返回空
 
 
 @app.route('/api/chart-org-data')
@@ -638,7 +591,7 @@ def api_chart_org_data(allowed_models, **kwargs):
         model_where = f"AND t1.model_name IN ({placeholders})"
         model_params = allowed_models
     else:
-        return jsonify([])
+        return api_response(data=[])  # 无权限返回空
 
     sql = f"""
         SELECT t1.model_name, COUNT(t1.model_name) AS count
@@ -656,13 +609,11 @@ def api_chart_org_data(allowed_models, **kwargs):
         data = [{"model_name": row["model_name"], "count": row["count"]} for row in rows]
         cursor.close()
         conn.close()
-        return Response(
-            json.dumps(data, ensure_ascii=False),
-            mimetype='application/json'
-        )
+        return api_response(data=data)  # 无权限返回空
+
     except Exception as e:
         print("查询错误：", e)
-        return jsonify([])
+        return api_response(data=[])  # 无权限返回空
 
 
 @app.route('/api/chart-data-monthly-all')
@@ -685,7 +636,7 @@ def chart_data_monthly_type(allowed_models, **kwargs):
         model_where = f"AND md.model_name IN ({placeholders})"
         model_params = allowed_models
     else:
-        return jsonify([])
+        return api_response(data=[])  # 无权限返回空
 
     try:
         conn = get_db()
@@ -730,7 +681,7 @@ def chart_data_monthly_type(allowed_models, **kwargs):
                 {"type_code": tc, "typeDes": type_desc_map.get(tc, f"类型{tc}"), "count": data_map.get((ym, tc), 0)} for
                 tc in all_types]
             result.append({"month": f"{ym[:4]}-{ym[4:]}", "data": data_list})
-        return jsonify(result)
+        return api_response(data=result)  # 无权限返回空
     except Exception as e:
         print(e)
         return jsonify({"error": str(e)}), 500
@@ -757,7 +708,7 @@ def api_chart_data1(allowed_models, **kwargs):
         model_where = f"AND t1.model_name IN ({placeholders})"
         model_params = allowed_models
     else:
-        return jsonify([])
+        return api_response(data=[])  # 无权限返回空
 
     sql = f"""
         SELECT t1.model_name, COUNT(t1.model_name) AS count
@@ -777,10 +728,10 @@ def api_chart_data1(allowed_models, **kwargs):
         cursor.execute(sql, params)
         rows = cursor.fetchall()
         data = [{"model_name": row["model_name"], "count": row["count"]} for row in rows]
-        return jsonify(data)
+        return api_response(data=data)  # 无权限返回空
     except Exception as e:
         print(e)
-        return jsonify([])
+        return api_response(data=[])  # 无权限返回空
 
 
 @app.route('/api/chart-data-detail1')
@@ -872,6 +823,7 @@ def chart_data_detail1(allowed_models, **kwargs):
         conn.close()
 
         result = {
+            "code": 200,
             "headers": headers,
             "data": data,
             "total": total,
@@ -1010,7 +962,7 @@ def org_list(allowed_models, **kwargs):
         model_where = f"AND model_name IN ({placeholders})"
         model_params = allowed_models
     else:
-        return jsonify([])
+        return api_response(data=[])  # 无权限返回空
 
     try:
         conn = get_db()
@@ -1018,7 +970,7 @@ def org_list(allowed_models, **kwargs):
         if model_name:
             # 额外增加 model_name 筛选，同时仍要满足权限条件
             if allowed_models is not None and model_name not in allowed_models:
-                return jsonify([])
+                return api_response(data=[])  # 无权限返回空
             sql = f"""
                 SELECT DISTINCT jgmc, jgbm
                 FROM model_data
@@ -1037,7 +989,7 @@ def org_list(allowed_models, **kwargs):
         cursor.execute(sql, params)
         rows = cursor.fetchall()
         result = [{"jgmc": row["jgmc"], "jgbm": row["jgbm"]} for row in rows]
-        return jsonify(result)
+        return api_response(data=result)  # 无权限返回空
     except Exception as e:
         return jsonify({"code": 400, "msg": str(e)}), 200
 
@@ -1078,14 +1030,14 @@ def model_list(allowed_models, **kwargs):
                 params.append(type_code)
             sql += " ORDER BY mc.model_name"
         else:
-            return jsonify([])
+            return api_response(data=[])  # 无权限返回空
 
         cursor.execute(sql, params)
         rows = cursor.fetchall()
         result = [{"model_name": row["model_name"]} for row in rows]
         cursor.close()
         conn.close()
-        return jsonify(result)
+        return api_response(data=result)  # 无权限返回空
     except Exception as e:
         print("查询模型列表错误：", e)
         return jsonify({"code": 500, "msg": str(e)}), 500
@@ -1108,7 +1060,7 @@ def model_list_all(allowed_models, **kwargs):
         rows = cursor.fetchall()
         # 格式化返回结果
         result = [{"model_name": row["model_name"]} for row in rows]
-        return jsonify(result)
+        return api_response(data=result)  # 无权限返回空
     except Exception as e:
         return jsonify({"code": 400, "msg": str(e)}), 500
 
@@ -1132,7 +1084,7 @@ def org_type_stats(allowed_models, **kwargs):
         model_where = f"AND md.model_name IN ({placeholders})"
         model_params = allowed_models
     else:
-        return jsonify([])
+        return api_response(data=[])  # 无权限返回空
 
     try:
         conn = get_db()
@@ -1158,7 +1110,7 @@ def org_type_stats(allowed_models, **kwargs):
         cursor.execute(sql, params)
         rows = cursor.fetchall()
         result = [dict(row) for row in rows]
-        return jsonify(result)
+        return api_response(data=result)  # 无权限返回空
     except Exception as e:
         return jsonify({"code": 400, "msg": str(e)}), 500
 
@@ -1185,7 +1137,7 @@ def org_type_stats2(allowed_models, **kwargs):
         model_where = f"AND md.model_name IN ({placeholders})"
         model_params = allowed_models
     else:
-        return jsonify([])
+        return api_response(data=[])  # 无权限返回空
 
     try:
         conn = get_db()
@@ -1222,10 +1174,8 @@ def org_type_stats2(allowed_models, **kwargs):
 
         cursor.close()
         conn.close()
-        return Response(
-            json.dumps(result, ensure_ascii=False),
-            mimetype='application/json'
-        )
+        return api_response(data=result)  # 无权限返回空
+
     except Exception as e:
         print("机构类型统计查询错误：", e)
         return jsonify({"code": 400, "msg": str(e)}), 500
@@ -1254,7 +1204,7 @@ def chart_data_monthly(allowed_models, **kwargs):
         cursor.close()
         conn.close()
     elif not allowed_models:
-        return jsonify([])
+        return api_response(data=[])  # 无权限返回空
 
     placeholders = ','.join(['?'] * len(allowed_models))
     try:
@@ -1299,7 +1249,7 @@ def chart_data_monthly(allowed_models, **kwargs):
                 count = data_map.get((ym, mn), 0)
                 model_counts.append({"model_name": mn, "count": count})
             result.append({"month": f"{ym[:4]}-{ym[4:]}", "data": model_counts})
-        return jsonify(result)
+        return api_response(data=result)  # 无权限返回空
     except Exception as e:
         print(e)
         return jsonify({"code": 400, "msg": str(e)}), 500
@@ -1354,15 +1304,14 @@ def get_model_config(current_user_id, current_user_admin):
         result = {
             "id": record_id,
             "type_code": type_code,  # 新增字段，与 id 平级
-            "data": data
+            "data": data,
+            "code":200
         }
 
         cursor.close()
         conn.close()
-        return Response(
-            json.dumps(result, ensure_ascii=False),
-            mimetype='application/json'
-        )
+        return result  # 无权限返回空
+
     except Exception as e:
         print("查询模型配置错误：", e)
         return jsonify({"code": 400, "msg": str(e)}), 500
@@ -1468,7 +1417,7 @@ def batch_stats(current_user_id, current_user_admin):
             conn_model.close()
         # 如果 allowed_models 为空且不是超级管理员，则用户没有权限查看任何模型，直接返回空数组
         if not allowed_models:
-            return jsonify([])
+            return api_response(data=[])  # 无权限返回空
 
     try:
         conn = get_db()
@@ -1544,10 +1493,8 @@ def batch_stats(current_user_id, current_user_admin):
         ]
         cursor.close()
         conn.close()
-        return Response(
-            json.dumps(result, ensure_ascii=False),
-            mimetype='application/json'
-        )
+        return api_response(data=result)  # 无权限返回空
+
     except Exception as e:
         print("批次统计查询错误：", e)
         return jsonify({"code": 500, "msg": str(e)}), 500
@@ -1709,7 +1656,8 @@ def user_list(current_user_id, current_user_admin):
     cursor.execute("SELECT admin_flg, office_id FROM sms_user WHERE id = ?", (current_user_id,))
     current_user = cursor.fetchone()
     if not current_user:
-        return jsonify({"error": "用户不存在"}), 404
+        return jsonify({"code": 401, "msg": "用户不存在"}), 200
+
     cursor.close()
     conn.close()
 
@@ -1732,7 +1680,7 @@ def user_list(current_user_id, current_user_admin):
     if not is_super:
         if not current_user['office_id']:
             # 无部门且非超级管理员，无权查看任何用户（或返回空）
-            return jsonify({"total": 0, "page": page, "per_page": per_page, "items": []})
+            return jsonify({"code":200,"total": 0, "page": page, "per_page": per_page, "items": []})
         base_sql += " AND u.office_id = ?"
         params.append(current_user['office_id'])
 
@@ -1762,7 +1710,8 @@ def user_list(current_user_id, current_user_admin):
         "total": total,
         "page": page,
         "per_page": per_page,
-        "items": items
+        "data": items,
+        "code": 200
     })
 # from werkzeug.security import generate_password_hash
 import hashlib
@@ -1918,70 +1867,190 @@ def office_list(current_user_id, current_user_admin):
     cursor.close()
     conn.close()
     return jsonify({
+        "Code": 200,
         "total": total,
         "page": page,
         "per_page": per_page,
         "items": items
     })
 
+# @app.route('/api/office/add', methods=['POST'])
+# @token_required
+# def office_add(current_user_id, current_user_admin):
+#     data = request.get_json()
+#     office_code = data.get('office_code', '').strip()
+#     office_name = data.get('office_name', '').strip()
+#     model_names = data.get('model_names', [])
+#
+#     if not office_code or not office_name:
+#         return jsonify({"code": 400, "msg": "机构编码和名称不能为空"}), 200
+#     if not isinstance(model_names, list):
+#         return jsonify({"code": 400, "msg": "model_names 必须是数组"}), 200
+#
+#     conn = get_db()
+#     cursor = conn.cursor()
+#     try:
+#         # 1. 插入机构
+#         cursor.execute(
+#             "INSERT INTO sms_office (office_code, office_name) VALUES (?, ?)",
+#             (office_code, office_name)
+#         )
+#         office_id = cursor.lastrowid
+#         conn.commit()
+#
+#         # 2. 关联模型
+#         inserted = 0
+#         for mn in set(model_names):
+#             if mn and mn.strip():
+#                 cursor.execute(
+#                     "INSERT INTO model_office (office_id, model_name) VALUES (?, ?)",
+#                     (office_id, mn.strip())
+#                 )
+#                 inserted += 1
+#         conn.commit()
+#         cursor.close()
+#         conn.close()
+#         return jsonify({
+#             "code": 200,
+#             "msg": f"机构添加成功，并关联 {inserted} 个模型",
+#             "office_id": office_id
+#         }), 200
+#
+#     except sqlite3.IntegrityError as e:
+#         return jsonify({"code": 400, "msg": "机构编码或名称已存在"}), 200
+#     except Exception as e:
+#         return jsonify({"code": 500, "msg": str(e)}), 200
 
-@app.route('/api/office/add', methods=['POST'])
-@token_required  # 需要登录
-def add_office(current_user_id, current_user_admin):
-    data = request.get_json()
-    office_code = data.get('office_code', '').strip()
-    office_name = data.get('office_name', '').strip()
-    if not office_code or not office_name:
-        return jsonify({"code": 401, "msg": f"机构编码和名称不能为空"}), 200
-
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "INSERT INTO sms_office (office_code, office_name) VALUES (?, ?)",
-            (office_code, office_name)
-        )
-        conn.commit()
-        new_id = cursor.lastrowid
-        cursor.close()
-        conn.close()
-        return jsonify({"code": 200, "msg": "机构添加成功", "office_id": new_id}), 200
-
-    except sqlite3.IntegrityError as e:
-        return jsonify({"code": 401, "msg": f"机构编码或名称已存在"}), 200
 
 
-@app.route('/api/office/upd', methods=['POST'])
+@app.route('/api/office/new', methods=['POST'])
 @token_required
-def update_office(current_user_id, current_user_admin):
+def office_new(current_user_id, current_user_admin):
     data = request.get_json()
     office_id = data.get('office_id')
-    if not office_id:
-        return jsonify({"code": 401, "msg": f"缺少 office_id"}), 200
-
     office_code = data.get('office_code', '').strip()
     office_name = data.get('office_name', '').strip()
-    if not office_code or not office_name:
-        return jsonify({"code": 401, "msg": f"机构编码和名称不能为空"}), 200
+    model_names = data.get('model_names', [])
+
+    if not isinstance(model_names, list):
+        return jsonify({"code": 400, "msg": "model_names 必须是数组"}), 200
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT office_id FROM sms_office WHERE office_id = ?", (office_id,))
-    if not cursor.fetchone():
-        return jsonify({"code": 401, "msg": f"机构不存在"}), 200
-
     try:
-        cursor.execute(
-            "UPDATE sms_office SET office_code = ?, office_name = ? WHERE office_id = ?",
-            (office_code, office_name, office_id)
-        )
-        conn.commit()
+        if office_id is not None:
+            # 更新模式：检查机构是否存在
+            cursor.execute("SELECT office_id FROM sms_office WHERE office_id = ?", (office_id,))
+            if not cursor.fetchone():
+                return jsonify({"code": 400, "msg": "机构不存在"}), 200
+
+            # 唯一性校验：如果修改了 office_code，检查是否与其他机构重复
+            if office_code:
+                cursor.execute("SELECT office_id FROM sms_office WHERE office_code = ? AND office_id != ?", (office_code, office_id))
+                if cursor.fetchone():
+                    return jsonify({"code": 400, "msg": f"机构编码 '{office_code}' 已存在"}), 200
+            # 唯一性校验：如果修改了 office_name，检查是否与其他机构重复
+            if office_name:
+                cursor.execute("SELECT office_id FROM sms_office WHERE office_name = ? AND office_id != ?", (office_name, office_id))
+                if cursor.fetchone():
+                    return jsonify({"code": 400, "msg": f"机构名称 '{office_name}' 已存在"}), 200
+
+            # 更新机构基本信息
+            update_fields = []
+            params = []
+            if office_code:
+                update_fields.append("office_code = ?")
+                params.append(office_code)
+            if office_name:
+                update_fields.append("office_name = ?")
+                params.append(office_name)
+            if update_fields:
+                sql = f"UPDATE sms_office SET {', '.join(update_fields)} WHERE office_id = ?"
+                params.append(office_id)
+                cursor.execute(sql, params)
+
+            # 更新模型关联（全量替换）
+            cursor.execute("DELETE FROM model_office WHERE office_id = ?", (office_id,))
+            inserted = 0
+            for mn in set(model_names):
+                if mn and mn.strip():
+                    cursor.execute(
+                        "INSERT INTO model_office (office_id, model_name) VALUES (?, ?)",
+                        (office_id, mn.strip())
+                    )
+                    inserted += 1
+            conn.commit()
+            msg = f"成功更新机构信息及模型关联，共关联 {inserted} 个模型"
+            result_office_id = office_id
+        else:
+            # 新增模式：必须提供编码和名称
+            if not office_code or not office_name:
+                return jsonify({"code": 400, "msg": "新增机构时必须提供 office_code 和 office_name"}), 200
+            # 唯一性校验（新增时无需排除自身）
+            cursor.execute("SELECT office_id FROM sms_office WHERE office_code = ?", (office_code,))
+            if cursor.fetchone():
+                return jsonify({"code": 400, "msg": f"机构编码 '{office_code}' 已存在"}), 200
+            cursor.execute("SELECT office_id FROM sms_office WHERE office_name = ?", (office_name,))
+            if cursor.fetchone():
+                return jsonify({"code": 400, "msg": f"机构名称 '{office_name}' 已存在"}), 200
+
+            cursor.execute(
+                "INSERT INTO sms_office (office_code, office_name) VALUES (?, ?)",
+                (office_code, office_name)
+            )
+            new_id = cursor.lastrowid
+            inserted = 0
+            for mn in set(model_names):
+                if mn and mn.strip():
+                    cursor.execute(
+                        "INSERT INTO model_office (office_id, model_name) VALUES (?, ?)",
+                        (new_id, mn.strip())
+                    )
+                    inserted += 1
+            conn.commit()
+            msg = f"机构添加成功，并关联 {inserted} 个模型"
+            result_office_id = new_id
+
         cursor.close()
         conn.close()
-        return jsonify({"code": 200, "msg": f"机构信息更新成功"}), 200
-
+        return jsonify({"code": 200, "msg": msg, "office_id": result_office_id}), 200
     except sqlite3.IntegrityError as e:
-        return jsonify({"code": 401, "msg": f"机构编码或名称已存在"}), 200
+        # 兜底处理，通常不会走到这里，因为已主动校验
+        return jsonify({"code": 400, "msg": "机构编码或名称已存在"}), 200
+    except Exception as e:
+        return jsonify({"code": 500, "msg": str(e)}), 400
+
+# @app.route('/api/office/upd', methods=['POST'])
+# @token_required
+# def update_office(current_user_id, current_user_admin):
+#     data = request.get_json()
+#     office_id = data.get('office_id')
+#     if not office_id:
+#         return jsonify({"code": 401, "msg": f"缺少 office_id"}), 200
+#
+#     office_code = data.get('office_code', '').strip()
+#     office_name = data.get('office_name', '').strip()
+#     if not office_code or not office_name:
+#         return jsonify({"code": 401, "msg": f"机构编码和名称不能为空"}), 200
+#
+#     conn = get_db()
+#     cursor = conn.cursor()
+#     cursor.execute("SELECT office_id FROM sms_office WHERE office_id = ?", (office_id,))
+#     if not cursor.fetchone():
+#         return jsonify({"code": 401, "msg": f"机构不存在"}), 200
+#
+#     try:
+#         cursor.execute(
+#             "UPDATE sms_office SET office_code = ?, office_name = ? WHERE office_id = ?",
+#             (office_code, office_name, office_id)
+#         )
+#         conn.commit()
+#         cursor.close()
+#         conn.close()
+#         return jsonify({"code": 200, "msg": f"机构信息更新成功"}), 200
+#
+#     except sqlite3.IntegrityError as e:
+#         return jsonify({"code": 401, "msg": f"机构编码或名称已存在"}), 200
 
 
 @app.route('/api/user/change-password', methods=['POST'])
@@ -2094,7 +2163,7 @@ def model_office_list(current_user_id, current_user_admin):
 
     cursor.close()
     conn.close()
-    return jsonify(result)
+    return api_response(data=result)
 
 
 @app.route('/api/model-office/new', methods=['POST'])
