@@ -15,10 +15,21 @@ import uuid
 import hashlib
 import jwt
 from functools import wraps
+from flask.json import JSONEncoder
+
+
+# 绑定到flask app
+
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key'
 
+class CustomJSONEncoder(JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, bytes):
+            return obj.decode('utf-8')
+        return super().default(obj)
+app.json_encoder = CustomJSONEncoder
 # JWT 配置（可以使用现有的 SECRET_KEY）
 JWT_SECRET = app.secret_key
 JWT_ALGORITHM = 'HS256'
