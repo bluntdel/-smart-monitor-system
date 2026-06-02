@@ -2097,17 +2097,18 @@ def delete_office(current_user_id, current_user_admin, office_id):
     cursor = conn.cursor()
     cursor.execute("SELECT office_id FROM sms_office WHERE office_id = ?", (office_id,))
     if not cursor.fetchone():
-        return jsonify({"code": 401, "msg": f"机构不存在"}), 200
+        return jsonify({"code": 401, "msg": "机构不存在"}), 200
 
-    # 将该机构下的用户的 office_id 置为 NULL
+    # 1. 删除 model_office 表中的关联记录
+    cursor.execute("DELETE FROM model_office WHERE office_id = ?", (office_id,))
+    # 2. 将该机构下的用户的 office_id 置为 NULL
     cursor.execute("UPDATE sms_user SET office_id = NULL WHERE office_id = ?", (office_id,))
-    # 删除机构
+    # 3. 删除机构
     cursor.execute("DELETE FROM sms_office WHERE office_id = ?", (office_id,))
     conn.commit()
     cursor.close()
     conn.close()
-    return jsonify({"code": 200, "msg": f"机构已删除，关联用户的机构信息已清空"}), 200
-
+    return jsonify({"code": 200, "msg": "机构已删除，关联用户的机构信息已清空，关联模型已删除"}), 200
 
 
 @app.route('/api/model-office/list', methods=['GET'])
